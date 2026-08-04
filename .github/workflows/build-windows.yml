@@ -1,0 +1,69 @@
+name: Build Windows
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - name: Copy frontend to embed directory
+        run: |
+          rm -rf internal/web/dist
+          cp -r web/dist internal/web/dist
+
+      - name: Build Windows binary
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          go build -ldflags="-s -w" -o notion-manager.exe ./cmd/notion-manager
+
+      - name: Package Windows ZIP
+        run: |
+          mkdir notion-manager-windows
+          mv notion-manager.exe notion-manager-windows/
+          cp example.config.yaml notion-manager-windows/
+          if [ -f run-windows.bat ]; then
+            cp run-windows.bat notion-manager-windows/
+          fi
+          zip -r notion-manager-windows-amd64.zip notion-manager-windows
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notion-manager-windows-amd64
+          path: notion-manager-windows-amd64.zip
