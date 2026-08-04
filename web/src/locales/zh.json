@@ -15,7 +15,12 @@
     "dashboard": "仪表盘",
     "accounts": "账号管理",
     "settings": "设置与记录",
-    "version": "当前运行版本：{{version}}"
+    "version": "当前运行版本：{{version}}",
+    "theme": "主题",
+    "light": "浅色",
+    "dark": "深色",
+    "switch_to_dark": "切换到深色模式",
+    "switch_to_light": "切换到浅色模式"
   },
   "dashboard": {
     "title": "仪表盘",

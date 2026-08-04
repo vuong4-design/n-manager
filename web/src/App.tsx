@@ -9,6 +9,9 @@ import { HistoryDrawer } from './components/HistoryDrawer'
 import { RequestHistoryDrawer } from './components/RequestHistoryDrawer'
 import { IconUserPlus, IconHistory, IconDatabase, IconDownload, IconUpload } from './components/Icons'
 import { LanguageToggle } from './components/LanguageToggle'
+import { ThemeToggle } from './components/ThemeToggle'
+import { applyTheme, getInitialTheme } from './theme'
+import type { DashboardTheme } from './theme'
 import { useTranslation } from 'react-i18next'
 
 // --- Icons ---
@@ -238,13 +241,13 @@ function AddAccountModal({
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 max-sm:px-0 max-sm:items-end"
       onClick={() => { if (!loading) onClose() }}
     >
-      <div className="w-full max-w-xl max-h-[92vh] overflow-auto bg-[#1a1a1a] border border-white/10 rounded-xl shadow-2xl p-6 max-sm:max-h-[96vh] max-sm:rounded-b-none max-sm:p-4" onClick={e => e.stopPropagation()}>
+      <div className="w-full max-w-xl max-h-[92vh] overflow-auto bg-bg-secondary border border-overlay/10 rounded-xl shadow-2xl p-6 max-sm:max-h-[96vh] max-sm:rounded-b-none max-sm:p-4" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-[16px] font-semibold">{t('modal.add.title')}</h2>
             <div className="text-[11px] text-text-muted mt-0.5">{t('modal.add.subtitle')}</div>
           </div>
-          <button disabled={loading} onClick={onClose} className="text-text-muted hover:text-white bg-transparent border-none cursor-pointer text-lg px-1 disabled:opacity-30">×</button>
+          <button disabled={loading} onClick={onClose} className="text-text-muted hover:text-strong bg-transparent border-none cursor-pointer text-lg px-1 disabled:opacity-30">×</button>
         </div>
 
         <div className="text-[12px] text-text-secondary mb-4 space-y-1.5">
@@ -252,7 +255,7 @@ function AddAccountModal({
           <p className="text-text-muted">{t('modal.add.how_to')}</p>
         </div>
 
-        <div className="mb-4 rounded-lg border border-white/10 bg-white/[.025] p-3">
+        <div className="mb-4 rounded-lg border border-overlay/10 bg-overlay/[.025] p-3">
             <div className="text-[12px] font-medium text-text-primary">{t('modal.add.check_enabled')}</div>
             <div className="text-[11px] text-text-muted mt-1 mb-2.5">{t('modal.add.check_help')}</div>
             <div className="grid grid-cols-2 gap-2 max-sm:grid-cols-1">
@@ -292,7 +295,7 @@ function AddAccountModal({
             placeholder={t('modal.add.placeholder')}
             rows={7}
             disabled={loading}
-            className="w-full py-2.5 px-3 bg-transparent border border-white/10 rounded-lg text-[13px] text-text-primary outline-none focus:border-white/30 focus:ring-1 focus:ring-white/10 transition-all placeholder:text-white/25 resize-y font-mono disabled:opacity-60"
+            className="w-full py-2.5 px-3 bg-transparent border border-overlay/10 rounded-lg text-[13px] text-text-primary outline-none focus:border-overlay/30 focus:ring-1 focus:ring-overlay/10 transition-all placeholder:text-overlay/25 resize-y font-mono disabled:opacity-60"
           />
           <div className="flex items-center justify-between gap-3 mt-1.5 text-[11px] text-text-muted">
             <span>{t('modal.add.valid_rows', { rows: parsedLines.length, count: uniqueTokenCount })}</span>
@@ -303,8 +306,8 @@ function AddAccountModal({
           )}
 
           {results.length > 0 && (
-            <div className="mt-3 border border-white/10 rounded-lg overflow-hidden">
-              <div className="flex items-center justify-between gap-3 px-3 py-2 bg-white/[.035] text-[11px]">
+            <div className="mt-3 border border-overlay/10 rounded-lg overflow-hidden">
+              <div className="flex items-center justify-between gap-3 px-3 py-2 bg-overlay/[.035] text-[11px]">
                 <span className="text-text-secondary">{t('modal.add.results')}</span>
                 <span className="tabular-nums">
                   <span className="text-ok">{t('modal.add.succeeded', { count: successCount })}</span>
@@ -313,7 +316,7 @@ function AddAccountModal({
                   {skippedCount > 0 && <span className="text-text-muted"> · {t('modal.add.skipped', { count: skippedCount })}</span>}
                 </span>
               </div>
-              <div className="max-h-48 overflow-auto divide-y divide-white/[.05]">
+              <div className="max-h-48 overflow-auto divide-y divide-overlay/[.05]">
                 {results.map(item => (
                   <div key={`${item.line}-${item.status}`} className="px-3 py-2 text-[11px]">
                     <div className="flex items-center gap-2">
@@ -333,7 +336,7 @@ function AddAccountModal({
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="flex-1 py-2.5 bg-transparent hover:bg-white/5 text-text-secondary rounded-lg text-[13px] font-medium cursor-pointer transition-colors border border-white/10"
+              className="flex-1 py-2.5 bg-transparent hover:bg-overlay/5 text-text-secondary rounded-lg text-[13px] font-medium cursor-pointer transition-colors border border-overlay/10"
             >
               {completed ? t('common.close') : t('common.cancel')}
             </button>
@@ -347,7 +350,7 @@ function AddAccountModal({
                   setProgress({ done: 0, total: 0 })
                   window.setTimeout(() => inputRef.current?.focus(), 0)
                 }}
-                className="flex-1 py-2.5 bg-white hover:bg-white/90 text-black rounded-lg text-[13px] font-semibold cursor-pointer transition-colors border-none"
+                className="flex-1 py-2.5 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-lg text-[13px] font-semibold cursor-pointer transition-colors border-none"
               >
                 {t('modal.add.continue')}
               </button>
@@ -355,7 +358,7 @@ function AddAccountModal({
               <button
                 type="submit"
                 disabled={loading || uniqueTokenCount === 0}
-                className="flex-1 py-2.5 bg-white hover:bg-white/90 text-black rounded-lg text-[13px] font-semibold cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="flex-1 py-2.5 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-lg text-[13px] font-semibold cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {loading
                   ? t('modal.add.importing', { done: progress.done, total: progress.total })
@@ -405,21 +408,21 @@ function CleanupModal({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" onClick={() => { if (!busy) onClose() }}>
-      <div className="w-full max-w-lg rounded-xl border border-white/10 bg-[#1a1a1a] p-5 shadow-2xl max-sm:p-4" onClick={event => event.stopPropagation()}>
+      <div className="w-full max-w-lg rounded-xl border border-overlay/10 bg-bg-secondary p-5 shadow-2xl max-sm:p-4" onClick={event => event.stopPropagation()}>
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <h2 className="text-[16px] font-semibold text-text-primary">{t('cleanup.title')}</h2>
             <p className="text-[11px] text-text-muted mt-1">{t('cleanup.subtitle')}</p>
           </div>
-          <button type="button" disabled={busy} onClick={onClose} className="text-text-muted hover:text-white bg-transparent border-none cursor-pointer text-lg px-1 disabled:opacity-30">×</button>
+          <button type="button" disabled={busy} onClick={onClose} className="text-text-muted hover:text-strong bg-transparent border-none cursor-pointer text-lg px-1 disabled:opacity-30">×</button>
         </div>
-        <div className="divide-y divide-white/[.05] rounded-lg border border-white/[.07] overflow-hidden">
+        <div className="divide-y divide-overlay/[.05] rounded-lg border border-overlay/[.07] overflow-hidden">
           {options.map(option => (
             <button
               key={option.target}
               type="button"
               onClick={() => setTarget(option.target)}
-              className={`w-full flex items-center gap-3 px-3.5 py-3 text-left border-none cursor-pointer transition-colors ${target === option.target ? 'bg-white/[.07]' : 'bg-bg-card hover:bg-bg-card-hover'}`}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 text-left border-none cursor-pointer transition-colors ${target === option.target ? 'bg-overlay/[.07]' : 'bg-bg-card hover:bg-bg-card-hover'}`}
             >
               <span className={`w-2 h-2 rounded-full shrink-0 ${option.tone}`} />
               <span className="min-w-0 flex-1">
@@ -427,14 +430,14 @@ function CleanupModal({
                 <span className="block text-[10px] text-text-muted mt-0.5">{option.help}</span>
               </span>
               <span className={`text-[12px] font-semibold tabular-nums ${counts[option.target] > 0 ? 'text-text-primary' : 'text-text-muted'}`}>{counts[option.target]}</span>
-              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${target === option.target ? 'border-notion-blue' : 'border-white/20'}`}>
+              <span className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${target === option.target ? 'border-notion-blue' : 'border-overlay/20'}`}>
                 {target === option.target && <span className="w-1.5 h-1.5 rounded-full bg-notion-blue" />}
               </span>
             </button>
           ))}
         </div>
         <div className="flex gap-2.5 mt-4">
-          <button type="button" onClick={onClose} disabled={busy} className="flex-1 py-2.5 bg-transparent hover:bg-white/5 text-text-secondary rounded-lg text-[12px] font-medium cursor-pointer border border-white/10 disabled:opacity-40">
+          <button type="button" onClick={onClose} disabled={busy} className="flex-1 py-2.5 bg-transparent hover:bg-overlay/5 text-text-secondary rounded-lg text-[12px] font-medium cursor-pointer border border-overlay/10 disabled:opacity-40">
             {t('common.cancel')}
           </button>
           <button
@@ -453,7 +456,7 @@ function CleanupModal({
 
 // --- Login Page ---
 
-function LoginPage({ onSuccess }: { onSuccess: () => void }) {
+function LoginPage({ onSuccess, theme, onThemeToggle }: { onSuccess: () => void; theme: DashboardTheme; onThemeToggle: () => void }) {
   const { t } = useTranslation()
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -486,10 +489,13 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="w-full max-w-sm">
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="fixed right-4 top-4 z-10">
+        <ThemeToggle theme={theme} onToggle={onThemeToggle} />
+      </div>
+      <div className="w-full max-w-sm rounded-2xl border border-border bg-bg-secondary/90 p-7 shadow-xl shadow-shadow/10 backdrop-blur-xl max-sm:p-5">
         <div className="flex flex-col items-center mb-8">
-          <div className="w-12 h-12 bg-[#1a1a1a] border border-white/10 rounded-xl flex items-center justify-center text-xl font-extrabold text-white mb-4">N</div>
+          <div className="w-12 h-12 bg-brand-mark border border-overlay/10 rounded-xl flex items-center justify-center text-xl font-extrabold text-brand-mark-foreground mb-4">N</div>
           <h1 className="text-xl font-semibold tracking-tight">notion-manager</h1>
           <p className="text-[13px] text-text-muted mt-1">{t('auth.prompt')}</p>
         </div>
@@ -502,7 +508,7 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
               onChange={e => setPassword(e.target.value)}
               placeholder={t('auth.placeholder')}
               autoComplete="current-password"
-              className="w-full py-2.5 px-4 bg-transparent border border-white/10 rounded-lg text-[14px] text-text-primary outline-none focus:border-white/30 focus:ring-1 focus:ring-white/10 transition-all placeholder:text-white/25"
+              className="w-full py-2.5 px-4 bg-transparent border border-overlay/10 rounded-lg text-[14px] text-text-primary outline-none focus:border-overlay/30 focus:ring-1 focus:ring-overlay/10 transition-all placeholder:text-overlay/25"
             />
           </div>
           {error && (
@@ -511,7 +517,7 @@ function LoginPage({ onSuccess }: { onSuccess: () => void }) {
           <button
             type="submit"
             disabled={loading || !password.trim()}
-            className="w-full py-2.5 bg-white hover:bg-white/90 text-black rounded-lg text-[14px] font-semibold cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
+            className="w-full py-2.5 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-lg text-[14px] font-semibold cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {loading ? t('auth.logging_in') : t('auth.login')}
           </button>
@@ -536,7 +542,7 @@ function displayVersion(version: string): string {
   return /^[0-9a-f]{12,}$/i.test(value) ? value.slice(0, 7) : value
 }
 
-function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChange, version }: {
+function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChange, version, theme, onThemeToggle }: {
   query: string
   onQuery: (q: string) => void
   onLogout: () => void
@@ -544,6 +550,8 @@ function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChan
   activePage: DashboardPage
   onPageChange: (page: DashboardPage) => void
   version: string
+  theme: DashboardTheme
+  onThemeToggle: () => void
 }) {
   const { t } = useTranslation()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -577,34 +585,34 @@ function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChan
   return (
     <header className="sticky top-0 z-50 flex items-center gap-5 px-6 py-2.5 border-b border-border bg-bg-secondary/95 backdrop-blur-xl max-md:flex-wrap max-md:gap-2 max-md:px-3 max-sm:py-2">
       <div className="flex items-center gap-2.5 min-w-0 max-md:flex-1 max-sm:hidden">
-        <div className="w-7 h-7 bg-[#333] rounded-md flex items-center justify-center text-sm font-extrabold text-white">N</div>
+        <div className="w-7 h-7 bg-brand-mark rounded-md flex items-center justify-center text-sm font-extrabold text-brand-mark-foreground">N</div>
         <span className="text-[15px] font-semibold tracking-tight">
           notion-manager
           <span className="text-text-secondary font-normal text-[13px] ml-1.5 max-sm:hidden">dashboard</span>
         </span>
         <span
-          className="text-[10px] text-text-muted font-mono bg-white/[.04] border border-white/[.06] rounded px-1.5 py-0.5"
+          className="text-[10px] text-text-muted font-mono bg-overlay/[.04] border border-overlay/[.06] rounded px-1.5 py-0.5"
           title={t('header.version', { version })}
         >
           {displayVersion(version)}
         </span>
       </div>
-      <nav className="flex items-center rounded-lg bg-black/20 p-1 border border-white/[.05] max-md:order-2 max-md:w-full max-sm:order-1">
+      <nav className="flex items-center rounded-lg bg-nav p-1 border border-overlay/[.05] max-md:order-2 max-md:w-full max-sm:order-1">
         <button
           onClick={() => onPageChange('dashboard')}
-          className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'dashboard' ? 'bg-white/10 text-white shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
+          className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'dashboard' ? 'bg-overlay/10 text-strong shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
         >
           <IconDashboard /> {t('header.dashboard')}
         </button>
         <button
           onClick={() => onPageChange('accounts')}
-          className={`px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'accounts' ? 'bg-white/10 text-white shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
+          className={`px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'accounts' ? 'bg-overlay/10 text-strong shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
         >
           {t('header.accounts')}
         </button>
         <button
           onClick={() => onPageChange('settings')}
-          className={`px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'settings' ? 'bg-white/10 text-white shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
+          className={`px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer border-none transition-colors max-md:flex-1 ${activePage === 'settings' ? 'bg-overlay/10 text-strong shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
         >
           {t('header.settings')}
         </button>
@@ -619,7 +627,7 @@ function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChan
             value={query}
             onChange={e => onQuery(e.target.value)}
             placeholder={t('header.search_placeholder')}
-            className="w-full py-1.5 pl-8 pr-10 bg-bg-input border border-border rounded-md text-[13px] text-text-primary outline-none focus:border-white/20 transition-colors placeholder:text-text-muted"
+            className="w-full py-1.5 pl-8 pr-10 bg-bg-input border border-border rounded-md text-[13px] text-text-primary outline-none focus:border-overlay/20 transition-colors placeholder:text-text-muted"
           />
           <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-text-muted bg-bg-card border border-border rounded px-1.5 py-0.5 max-sm:hidden">/</kbd>
         </div>}
@@ -632,6 +640,7 @@ function Header({ query, onQuery, onLogout, authRequired, activePage, onPageChan
             {t('header.logout')}
           </button>
         )}
+        <ThemeToggle theme={theme} onToggle={onThemeToggle} />
         <LanguageToggle />
       </div>
     </header>
@@ -697,7 +706,7 @@ function OverviewBar({ label, usage, limit }: { label: string; usage: number; li
           {fmt(remaining)} <span className="text-text-muted font-normal">/ {fmt(limit)} {t('stats.remaining')}</span>
         </span>
       </div>
-      <div className="h-[2px] bg-white/[.06] rounded-full overflow-hidden">
+      <div className="h-[2px] bg-overlay/[.06] rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all duration-500 ${fillClass}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -723,7 +732,7 @@ function TotalQuotaBar({ summary }: { summary?: AccountSummary | null }) {
         <span className="text-[11px] text-text-secondary uppercase tracking-wider flex items-center gap-1.5"><IconBarChart /> {t('stats.diagnostics')}</span>
         {totalPremiumLimit > 0 && (
           <span className="text-[12px] text-text-muted tabular-nums max-sm:hidden">
-            Premium balance <span className="text-[#7eb8ff] font-semibold">{fmt(totalPremiumBalance)}</span> · monthly limit {fmt(totalPremiumLimit)}
+            Premium balance <span className="text-premium font-semibold">{fmt(totalPremiumBalance)}</span> · monthly limit {fmt(totalPremiumLimit)}
           </span>
         )}
       </div>
@@ -758,7 +767,7 @@ function QuotaBar({ label, labelClass, usage, limit, status }: { label: string; 
           {fmt(usage || 0)} <span className="text-text-muted font-normal">/</span> {fmt(limit || 0)}
         </span>
       </div>
-      <div className="h-[2px] bg-white/[.06] rounded-full overflow-hidden">
+      <div className="h-[2px] bg-overlay/[.06] rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all duration-500 ${fillClass}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -768,10 +777,10 @@ function QuotaBar({ label, labelClass, usage, limit, status }: { label: string; 
 function Badge({ children, variant }: { children: React.ReactNode; variant: 'plan' | 'premium' | 'research' | 'warning' | 'model' | 'ok' }) {
   const cls: Record<string, string> = {
     plan: 'text-text-secondary',
-    premium: 'text-[#7eb8ff]',
+    premium: 'text-premium',
     research: 'text-research',
     warning: 'text-red-400 bg-red-500/10 px-1.5 rounded',
-    model: 'text-text-secondary hover:text-white transition-colors cursor-pointer',
+    model: 'text-text-secondary hover:text-strong transition-colors cursor-pointer',
     ok: 'text-ok bg-ok/10 px-1.5 rounded',
   }
   return (
@@ -873,9 +882,9 @@ function AccountCard({
   // immediately sees the account is unhealthy. Click-through is blocked
   // because Notion's /ai SPA hangs indefinitely on these accounts (the
   // root-cause this fix is for).
-  const cardBg = quotaBlocked && account.permanent ? 'bg-bg-exhausted border-white/[0.03] opacity-55'
-    : manuallyDisabled || quotaBlocked || noWorkspace || aiDisabled || authInvalid || temporarilyUnavailable ? 'bg-bg-exhausted border-white/[0.03]'
-    : 'bg-bg-card hover:bg-bg-card-hover border-white/[0.03] hover:border-white/[0.07]'
+  const cardBg = quotaBlocked && account.permanent ? 'bg-bg-exhausted border-overlay/[0.03] opacity-55'
+    : manuallyDisabled || quotaBlocked || noWorkspace || aiDisabled || authInvalid || temporarilyUnavailable ? 'bg-bg-exhausted border-overlay/[0.03]'
+    : 'bg-bg-card hover:bg-bg-card-hover border-overlay/[0.03] hover:border-overlay/[0.07]'
 
   const handleClick = () => {
     if (manuallyDisabled) {
@@ -905,7 +914,7 @@ function AccountCard({
 
   return (
     <div
-      className={`${embedded ? 'rounded-md p-3' : 'rounded-lg p-4 max-sm:p-3'} border ${manuallyDisabled || authInvalid || noWorkspace || aiDisabled || temporarilyUnavailable ? 'cursor-not-allowed' : `cursor-pointer ${embedded ? 'hover:border-white/[0.12]' : 'hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/30'}`} transition-all duration-200 ${selected ? 'ring-1 ring-notion-blue border-notion-blue/60' : ''} ${cardBg}`}
+      className={`${embedded ? 'rounded-md p-3' : 'rounded-lg p-4 max-sm:p-3'} border ${manuallyDisabled || authInvalid || noWorkspace || aiDisabled || temporarilyUnavailable ? 'cursor-not-allowed' : `cursor-pointer ${embedded ? 'hover:border-overlay/[0.12]' : 'hover:-translate-y-0.5 hover:shadow-lg hover:shadow-shadow/30'}`} transition-all duration-200 ${selected ? 'ring-1 ring-notion-blue border-notion-blue/60' : ''} ${cardBg}`}
       onClick={handleClick}
       title={manuallyDisabled ? t('account.manual_disabled_tooltip') : authInvalid ? t('account.auth_invalid_tooltip') : noWorkspace ? t('account.no_workspace_tooltip') : aiDisabled ? t('account.ai_disabled_tooltip') : temporarilyUnavailable ? t('account.temporary_tooltip', { reason: account.last_failure_reason || 'temporary_failure' }) : undefined}
     >
@@ -925,7 +934,7 @@ function AccountCard({
         />
         {!embedded && (
           <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-white shrink-0"
+            className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold text-on-color shrink-0"
             style={{ background: avatarColor(account.name) }}
           >
             {avatarLetter(account.name)}
@@ -993,7 +1002,7 @@ function AccountCard({
         {modelCount > 0 && (
           <button
             onClick={e => { e.stopPropagation(); setShowModels(!showModels) }}
-            className="cursor-pointer border-none bg-transparent p-0 text-[11px] text-text-secondary hover:text-white transition-colors"
+            className="cursor-pointer border-none bg-transparent p-0 text-[11px] text-text-secondary hover:text-strong transition-colors"
           >
             {modelCount} models {showModels ? '▴' : '▾'}
           </button>
@@ -1014,7 +1023,7 @@ function AccountCard({
           {userQuota.limit > 0 && <QuotaBar label="User raw" usage={userQuota.usage} limit={userQuota.limit} />}
         </>
       )}
-      {premium && <QuotaBar label="Premium monthlyAllocated raw" labelClass="text-[#7eb8ff]" usage={account.premium_usage} limit={account.premium_limit} />}
+      {premium && <QuotaBar label="Premium monthlyAllocated raw" labelClass="text-premium" usage={account.premium_usage} limit={account.premium_limit} />}
       <div className="flex flex-wrap gap-3 mt-2 text-[10px] text-text-muted">
         {!fullNotionAI && <span>{t('account.basic_estimated', { count: fmt(account.remaining || 0) })}</span>}
         {premium && <span>{t('account.premium_raw', { count: fmt(account.premium_balance || 0) })}</span>}
@@ -1024,7 +1033,7 @@ function AccountCard({
       {showModels && account.models && account.models.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1.5 mb-1">
           {account.models.map(m => (
-            <span key={m.id} className="text-[10px] px-1.5 py-0.5 bg-white/[.06] rounded text-text-secondary">
+            <span key={m.id} className="text-[10px] px-1.5 py-0.5 bg-overlay/[.06] rounded text-text-secondary">
               {m.name || m.id}
             </span>
           ))}
@@ -1042,7 +1051,7 @@ function AccountCard({
         ) : noWorkspace ? (
           <span className="text-[11px] text-err font-medium">{t('account.unavailable')}</span>
         ) : (
-          <span className="text-[11px] text-text-secondary hover:text-white font-medium transition-colors">{t('account.open_proxy')}</span>
+          <span className="text-[11px] text-text-secondary hover:text-strong font-medium transition-colors">{t('account.open_proxy')}</span>
         )}
       </div>
     </div>
@@ -1107,7 +1116,7 @@ function AccountGroupCard({
           event.stopPropagation()
           setSwitcherOpen(open => !open)
         }}
-        className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-[10px] cursor-pointer transition-colors ${switcherOpen ? 'bg-white/10 border-white/15 text-text-primary' : 'bg-white/[.04] border-white/[.07] text-text-secondary hover:text-text-primary hover:bg-white/[.07]'}`}
+        className={`inline-flex items-center gap-1 px-2 py-1 rounded border text-[10px] cursor-pointer transition-colors ${switcherOpen ? 'bg-overlay/10 border-overlay/15 text-text-primary' : 'bg-overlay/[.04] border-overlay/[.07] text-text-secondary hover:text-text-primary hover:bg-overlay/[.07]'}`}
         aria-haspopup="listbox"
         aria-expanded={switcherOpen}
         title={t('account.switch_workspace')}
@@ -1116,7 +1125,7 @@ function AccountGroupCard({
       </button>
       {switcherOpen && (
         <div
-          className="absolute right-0 top-[calc(100%+6px)] z-40 w-72 max-w-[75vw] max-h-72 overflow-auto rounded-lg border border-white/10 bg-[#202020] shadow-2xl shadow-black/50 p-1.5"
+          className="absolute right-0 top-[calc(100%+6px)] z-40 w-72 max-w-[75vw] max-h-72 overflow-auto rounded-lg border border-overlay/10 bg-bg-secondary shadow-2xl shadow-shadow/50 p-1.5"
           role="listbox"
           onClick={event => event.stopPropagation()}
         >
@@ -1133,7 +1142,7 @@ function AccountGroupCard({
                   setActiveAccountID(account.account_id)
                   setSwitcherOpen(false)
                 }}
-                className={`w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left border-none cursor-pointer transition-colors ${current ? 'bg-notion-blue/15' : 'bg-transparent hover:bg-white/[.05]'}`}
+                className={`w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left border-none cursor-pointer transition-colors ${current ? 'bg-notion-blue/15' : 'bg-transparent hover:bg-overlay/[.05]'}`}
               >
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${usable ? 'bg-ok' : 'bg-err'}`} />
                 <span className="min-w-0 flex-1">
@@ -1226,7 +1235,7 @@ function AccountBatchProgress({
             {job.failed > 0 && <span className="text-err">{t('batch.failed', { count: job.failed })}</span>}
             {isPersonal && <><span>{t('batch.configured', { count: job.configured })}</span><span>{t('batch.missing', { count: job.missing })}</span></>}
           </div>
-          <div className="mt-2 h-1.5 bg-white/[.07] rounded-full overflow-hidden">
+          <div className="mt-2 h-1.5 bg-overlay/[.07] rounded-full overflow-hidden">
             <div className="h-full bg-notion-blue rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
           </div>
           {activeSteps.length > 0 && (
@@ -1365,7 +1374,7 @@ function DashboardHome({
           <button
             onClick={onOpenBest}
             disabled={data.available === 0}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-white hover:bg-white/90 text-[#111] rounded-md text-[12px] font-medium cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-md text-[12px] font-medium cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <IconZap /> {t('actions.open_best_account')}
           </button>
@@ -1389,10 +1398,10 @@ function DashboardHome({
         <div className="bg-notion-blue/10 border border-notion-blue/20 rounded-lg p-3 mb-5 flex items-center gap-3">
           <div className="w-4 h-4 border-2 border-notion-blue/30 border-t-notion-blue rounded-full animate-spin shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="text-[12px] font-medium text-[#5c9ce6]">
+            <div className="text-[12px] font-medium text-premium">
               {t('common.status_refreshing', { current: refreshStatus.done, total: refreshStatus.total })}
             </div>
-            <div className="h-1.5 bg-white/[.06] rounded-full overflow-hidden mt-1.5">
+            <div className="h-1.5 bg-overlay/[.06] rounded-full overflow-hidden mt-1.5">
               <div
                 className="h-full bg-notion-blue rounded-full transition-all duration-500"
                 style={{ width: `${refreshStatus.total > 0 ? (refreshStatus.done / refreshStatus.total) * 100 : 0}%` }}
@@ -1407,7 +1416,7 @@ function DashboardHome({
         </div>
       )}
 
-      <section className="grid grid-cols-4 border-y border-white/[.06] divide-x divide-white/[.06] mb-6 max-lg:grid-cols-2 max-lg:[&>*:nth-child(3)]:border-t max-lg:[&>*:nth-child(4)]:border-t max-sm:grid-cols-2 max-sm:divide-x-0 max-sm:border-y-0 max-sm:gap-2 max-sm:[&>*]:rounded-lg max-sm:[&>*]:border max-sm:[&>*]:border-border max-sm:[&>*]:bg-bg-card">
+      <section className="grid grid-cols-4 border-y border-overlay/[.06] divide-x divide-overlay/[.06] mb-6 max-lg:grid-cols-2 max-lg:[&>*:nth-child(3)]:border-t max-lg:[&>*:nth-child(4)]:border-t max-sm:grid-cols-2 max-sm:divide-x-0 max-sm:border-y-0 max-sm:gap-2 max-sm:[&>*]:rounded-lg max-sm:[&>*]:border max-sm:[&>*]:border-border max-sm:[&>*]:bg-bg-card">
         <StatCard
           label={t('dashboard.available_workspaces')}
           value={`${data.available} / ${data.total}`}
@@ -1454,7 +1463,7 @@ function DashboardHome({
               {attentionTotal === 0 ? t('dashboard.healthy') : t('dashboard.attention_count', { count: attentionTotal })}
             </span>
           </div>
-          <div className="flex h-2 rounded overflow-hidden bg-white/[.04] mt-5" aria-label={t('dashboard.pool_health')}>
+          <div className="flex h-2 rounded overflow-hidden bg-overlay/[.04] mt-5" aria-label={t('dashboard.pool_health')}>
             {healthSegments.map(segment => (
               <div
                 key={segment.key}
@@ -1473,13 +1482,13 @@ function DashboardHome({
               </div>
             ))}
           </div>
-          <div className="mt-6 pt-5 border-t border-white/[.06]">
+          <div className="mt-6 pt-5 border-t border-overlay/[.06]">
             <TotalQuotaBar summary={data.summary} />
           </div>
         </section>
 
         <section className="bg-bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-4 border-b border-white/[.06]">
+          <div className="px-4 py-4 border-b border-overlay/[.06]">
             <h2 className="text-[14px] font-semibold text-text-primary">{t('dashboard.needs_attention')}</h2>
             <p className="text-[11px] text-text-muted mt-1">{t('dashboard.needs_attention_help')}</p>
           </div>
@@ -1490,12 +1499,12 @@ function DashboardHome({
               <div className="text-[11px] text-text-muted mt-1">{t('dashboard.no_attention_help')}</div>
             </div>
           ) : (
-            <div className="divide-y divide-white/[.05]">
+            <div className="divide-y divide-overlay/[.05]">
               {issues.map(issue => (
                 <button
                   key={issue.status}
                   onClick={() => onShowAccounts(issue.status)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left bg-transparent hover:bg-white/[.025] cursor-pointer border-none transition-colors"
+                  className="w-full flex items-center gap-3 px-4 py-3 text-left bg-transparent hover:bg-overlay/[.025] cursor-pointer border-none transition-colors"
                 >
                   <span className={`w-2 h-2 rounded-full shrink-0 ${issue.dot}`} />
                   <span className="min-w-0 flex-1">
@@ -1510,7 +1519,7 @@ function DashboardHome({
           )}
           <button
             onClick={onManageAccounts}
-            className="w-full flex items-center justify-between px-4 py-3 border-0 border-t border-white/[.06] bg-white/[.015] hover:bg-white/[.04] text-[11px] text-text-secondary hover:text-text-primary cursor-pointer transition-colors"
+            className="w-full flex items-center justify-between px-4 py-3 border-0 border-t border-overlay/[.06] bg-overlay/[.015] hover:bg-overlay/[.04] text-[11px] text-text-secondary hover:text-text-primary cursor-pointer transition-colors"
           >
             <span>{t('dashboard.manage_all_accounts')}</span><IconArrowRight />
           </button>
@@ -1537,7 +1546,7 @@ function DashboardHome({
           </div>
           {lastSevenDays.length > 1 ? (
             <div className="mt-5">
-              <div className="h-28 flex items-end gap-2 border-b border-white/[.06]">
+              <div className="h-28 flex items-end gap-2 border-b border-overlay/[.06]">
                 {lastSevenDays.map(day => {
                   const totalHeight = Math.max(4, (day.total / maxDayTokens) * 100)
                   const outputShare = day.total > 0 ? (day.output / day.total) * 100 : 0
@@ -1548,7 +1557,7 @@ function DashboardHome({
                         style={{ height: `${totalHeight}%` }}
                         title={`${day.date} · ${formatTokens(day.total)}`}
                       >
-                        <div className="absolute bottom-0 inset-x-0 bg-[#9b72cf]/80" style={{ height: `${outputShare}%` }} />
+                        <div className="absolute bottom-0 inset-x-0 bg-output/80" style={{ height: `${outputShare}%` }} />
                       </div>
                     </div>
                   )
@@ -1563,11 +1572,11 @@ function DashboardHome({
               </div>
               <div className="flex items-center gap-4 mt-3 text-[10px] text-text-muted">
                 <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-notion-blue/70" />{t('dashboard.input_tokens')}</span>
-                <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-[#9b72cf]/80" />{t('dashboard.output_tokens')}</span>
+                <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-sm bg-output/80" />{t('dashboard.output_tokens')}</span>
               </div>
             </div>
           ) : lastSevenDays.length === 1 ? (
-            <div className="mt-5 h-28 rounded-md border border-white/[.06] bg-black/10 flex items-center justify-center text-center px-4">
+            <div className="mt-5 h-28 rounded-md border border-overlay/[.06] bg-overlay/[.03] flex items-center justify-center text-center px-4">
               <div>
                 <div className="text-2xl font-semibold text-notion-blue tabular-nums">{formatTokens(lastSevenDays[0].total)}</div>
                 <div className="text-[11px] text-text-secondary mt-1">
@@ -1584,14 +1593,14 @@ function DashboardHome({
         </section>
 
         <section className="bg-bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-4 border-b border-white/[.06] flex items-start justify-between gap-3">
+          <div className="px-4 py-4 border-b border-overlay/[.06] flex items-start justify-between gap-3">
             <div>
               <h2 className="text-[14px] font-semibold text-text-primary">{t('dashboard.runtime')}</h2>
               <p className="text-[11px] text-text-muted mt-1">{t('dashboard.runtime_help')}</p>
             </div>
             <span className={`w-2 h-2 mt-1.5 rounded-full ${versionStatus?.status === 'update_available' ? 'bg-warn' : 'bg-ok'}`} />
           </div>
-          <dl className="divide-y divide-white/[.05]">
+          <dl className="divide-y divide-overlay/[.05]">
             <div className="flex items-center justify-between gap-4 px-4 py-3">
               <dt className="text-[11px] text-text-muted">{t('dashboard.deployment')}</dt>
               <dd className="text-[11px] text-text-primary font-mono">{version}</dd>
@@ -1615,7 +1624,7 @@ function DashboardHome({
               </dd>
             </div>
           </dl>
-          <div className="px-4 py-3 border-t border-white/[.06] flex items-center justify-between gap-3">
+          <div className="px-4 py-3 border-t border-overlay/[.06] flex items-center justify-between gap-3">
             <span className="text-[10px] text-text-muted">
               {refreshTime ? t('actions.updated_at', { time: refreshTime }) : ''}
             </span>
@@ -1641,6 +1650,12 @@ function DashboardHome({
 
 export default function App() {
   const { t, i18n } = useTranslation()
+  const [theme, setTheme] = useState<DashboardTheme>(getInitialTheme)
+  const toggleTheme = useCallback(() => setTheme(current => current === 'light' ? 'dark' : 'light'), [])
+
+  useEffect(() => {
+    applyTheme(theme)
+  }, [theme])
   const [authState, setAuthState] = useState<'checking' | 'login' | 'authenticated'>('checking')
   const [authRequired, setAuthRequired] = useState(false)
   const [data, setData] = useState<DashboardData | null>(null)
@@ -2312,7 +2327,7 @@ export default function App() {
 
   // Login page
   if (authState === 'login') {
-    return <LoginPage onSuccess={() => { setAuthState('authenticated'); setLoading(true) }} />
+    return <LoginPage onSuccess={() => { setAuthState('authenticated'); setLoading(true) }} theme={theme} onThemeToggle={toggleTheme} />
   }
 
   if (loading) {
@@ -2354,6 +2369,8 @@ export default function App() {
         activePage={activePage}
         onPageChange={changePage}
         version={appVersion}
+        theme={theme}
+        onThemeToggle={toggleTheme}
       />
 
       <main className="max-w-[1280px] mx-auto px-6 py-6 max-sm:px-3 max-sm:py-4">
@@ -2392,7 +2409,7 @@ export default function App() {
 
         {/* Summary */}
         {activePage === 'accounts' && summary && (
-          <div className="grid grid-cols-5 divide-x divide-white/[.05] mb-6 max-lg:grid-cols-3 max-md:grid-cols-2 max-md:divide-x-0 max-sm:gap-2 max-sm:mb-3 max-sm:[&>*]:rounded-lg max-sm:[&>*]:border max-sm:[&>*]:border-border max-sm:[&>*]:bg-bg-card max-sm:[&>*:last-child]:col-span-2">
+          <div className="grid grid-cols-5 divide-x divide-overlay/[.05] mb-6 max-lg:grid-cols-3 max-md:grid-cols-2 max-md:divide-x-0 max-sm:gap-2 max-sm:mb-3 max-sm:[&>*]:rounded-lg max-sm:[&>*]:border max-sm:[&>*]:border-border max-sm:[&>*]:bg-bg-card max-sm:[&>*:last-child]:col-span-2">
             <StatCard
               label={t('stats.total_accounts')} value={data!.total}
               sub={accountSummaryParts}
@@ -2443,10 +2460,10 @@ export default function App() {
           <div className="bg-notion-blue/10 border border-notion-blue/20 rounded-lg p-3 mb-5 flex items-center gap-3">
             <div className="w-4 h-4 border-2 border-notion-blue/30 border-t-notion-blue rounded-full animate-spin shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-medium text-[#5c9ce6]">
+              <div className="text-[13px] font-medium text-premium">
                 {t('common.status_refreshing', { current: refreshStatus.done, total: refreshStatus.total })}
               </div>
-              <div className="h-1.5 bg-white/[.06] rounded-full overflow-hidden mt-1.5">
+              <div className="h-1.5 bg-overlay/[.06] rounded-full overflow-hidden mt-1.5">
                 <div
                   className="h-full bg-notion-blue rounded-full transition-all duration-500"
                   style={{ width: `${refreshStatus.total > 0 ? (refreshStatus.done / refreshStatus.total) * 100 : 0}%` }}
@@ -2465,7 +2482,7 @@ export default function App() {
         {activePage === 'accounts' && <div className="flex items-center gap-2.5 mb-5 flex-wrap max-sm:grid max-sm:grid-cols-2 max-sm:gap-2 max-sm:[&>button]:w-full max-sm:[&>button]:justify-center max-sm:[&>button]:px-3 max-sm:[&>button]:text-[12px] max-sm:[&>button:last-of-type]:col-span-2">
           <button
             onClick={openBestProxy}
-            className="inline-flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-white/90 text-[#111] rounded-md text-[13px] font-medium cursor-pointer transition-colors border-none"
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-md text-[13px] font-medium cursor-pointer transition-colors border-none"
           >
             <IconZap /> {t('actions.open_best_account')}
           </button>
@@ -2615,12 +2632,12 @@ export default function App() {
         {activePage === 'settings' && settings && (() => {
           const apiBase = `${window.location.origin}/v1`
           return (
-            <div className="mb-6 px-5 py-5 bg-[#171717] border border-white/5 rounded-lg shadow-inner max-sm:px-3 max-sm:py-4">
+            <div className="mb-6 px-5 py-5 bg-bg-primary border border-overlay/5 rounded-lg shadow-inner max-sm:px-3 max-sm:py-4">
               <div className="mb-4">
                 <div className="text-[14px] text-text-primary font-semibold flex items-center gap-2"><IconSettings /> {t('api.feature_settings')}</div>
                 <div className="text-[11px] text-text-muted mt-1">{t('api.persist_help')}</div>
               </div>
-              <div className="mb-5 rounded-lg border border-white/[.07] bg-white/[.025] p-3.5">
+              <div className="mb-5 rounded-lg border border-overlay/[.07] bg-overlay/[.025] p-3.5">
                 <div className="flex items-center justify-between gap-3 mb-3 max-sm:items-start">
                   <div>
                     <div className="text-[13px] font-medium text-text-primary">{t('api.prompt_tools')}</div>
@@ -2674,12 +2691,12 @@ export default function App() {
                     <div className="text-[11px] text-text-muted mt-1.5 leading-relaxed">{t('api.tool_bridge_help')}</div>
                   </button>
                 </div>
-                <div className="mt-3 pt-3 border-t border-white/[.06] flex items-center justify-between gap-4 max-md:flex-col max-md:items-stretch">
+                <div className="mt-3 pt-3 border-t border-overlay/[.06] flex items-center justify-between gap-4 max-md:flex-col max-md:items-stretch">
                   <div className="min-w-0">
                     <div className="text-[12px] font-semibold text-text-primary">{t('api.tool_choice_policy')}</div>
                     <div className="text-[11px] text-text-muted mt-0.5 leading-relaxed">{t('api.tool_choice_policy_help')}</div>
                   </div>
-                  <div className="grid grid-cols-4 p-0.5 rounded-md border border-white/[.07] bg-black/20 shrink-0 max-sm:grid-cols-2" role="radiogroup" aria-label={t('api.tool_choice_policy')}>
+                  <div className="grid grid-cols-4 p-0.5 rounded-md border border-overlay/[.07] bg-nav shrink-0 max-sm:grid-cols-2" role="radiogroup" aria-label={t('api.tool_choice_policy')}>
                     {(['client', 'auto', 'required', 'none'] as ToolChoicePolicy[]).map(policy => (
                       <button
                         key={policy}
@@ -2688,7 +2705,7 @@ export default function App() {
                         aria-checked={settings.tool_choice_policy === policy}
                         disabled={promptModeSaving}
                         onClick={() => setToolChoicePolicy(policy)}
-                        className={`h-8 min-w-[76px] px-2 rounded text-[11px] font-medium cursor-pointer transition-colors disabled:cursor-wait ${settings.tool_choice_policy === policy ? 'bg-white/10 text-white shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
+                        className={`h-8 min-w-[76px] px-2 rounded text-[11px] font-medium cursor-pointer transition-colors disabled:cursor-wait ${settings.tool_choice_policy === policy ? 'bg-overlay/10 text-strong shadow-sm' : 'bg-transparent text-text-muted hover:text-text-primary'}`}
                       >
                         {t(`api.tool_choice_${policy}`)}
                       </button>
@@ -2701,7 +2718,7 @@ export default function App() {
                   <div className="flex items-center gap-1.5 max-sm:flex-wrap">
                     <span className="text-[11px] text-text-muted">API Key</span>
                     <code
-                      className={`text-[11px] bg-white/[.05] px-1.5 py-0.5 rounded cursor-pointer hover:bg-white/[.1] transition-colors font-mono max-sm:max-w-[220px] max-sm:truncate ${copiedField === 'key' ? 'text-ok' : 'text-text-primary'}`}
+                      className={`text-[11px] bg-overlay/[.05] px-1.5 py-0.5 rounded cursor-pointer hover:bg-overlay/[.1] transition-colors font-mono max-sm:max-w-[220px] max-sm:truncate ${copiedField === 'key' ? 'text-ok' : 'text-text-primary'}`}
                       onClick={copyAPIKey}
                       title={t('api.click_to_copy')}
                     >
@@ -2727,7 +2744,7 @@ export default function App() {
                   <div className="flex items-center gap-1.5 max-sm:flex-wrap">
                     <span className="text-[11px] text-text-muted">Base URL</span>
                     <code
-                      className={`text-[11px] bg-white/[.05] px-1.5 py-0.5 rounded cursor-pointer hover:bg-white/[.1] transition-colors font-mono break-all ${copiedField === 'base' ? 'text-ok' : 'text-text-primary'}`}
+                      className={`text-[11px] bg-overlay/[.05] px-1.5 py-0.5 rounded cursor-pointer hover:bg-overlay/[.1] transition-colors font-mono break-all ${copiedField === 'base' ? 'text-ok' : 'text-text-primary'}`}
                       onClick={() => copyToClipboard(apiBase, 'base')}
                       title={t('api.click_to_copy')}
                     >
@@ -2755,7 +2772,7 @@ export default function App() {
                       }}
                       placeholder={t('api.direct_connection_tip')}
                       disabled={proxySaving}
-                      className={`text-[11px] bg-white/[.05] px-1.5 py-0.5 rounded font-mono outline-none border w-[160px] focus:w-[280px] transition-[width,border-color] duration-150 max-sm:w-full max-sm:focus:w-full ${proxyError ? 'border-err text-err' : 'border-transparent focus:border-white/20 text-text-primary'} placeholder:text-text-muted/60`}
+                      className={`text-[11px] bg-overlay/[.05] px-1.5 py-0.5 rounded font-mono outline-none border w-[160px] focus:w-[280px] transition-[width,border-color] duration-150 max-sm:w-full max-sm:focus:w-full ${proxyError ? 'border-err text-err' : 'border-transparent focus:border-overlay/20 text-text-primary'} placeholder:text-text-muted/60`}
                       title={proxyError || (settings.notion_proxy ? t('api.current_proxy', { proxy: settings.notion_proxy }) : t('api.current_direct'))}
                     />
                   </div>
@@ -2764,18 +2781,18 @@ export default function App() {
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <button
                       onClick={() => toggleSetting('enable_web_search')}
-                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.enable_web_search ? 'bg-[#4dab9a]' : 'bg-white/10 border border-white/5'}`}
+                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.enable_web_search ? 'bg-ok' : 'bg-overlay/10 border border-overlay/5'}`}
                     >
-                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.enable_web_search ? 'bg-white shadow-sm translate-x-[12px]' : 'bg-white/40'}`} />
+                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.enable_web_search ? 'bg-switch-thumb shadow-sm translate-x-[12px]' : 'bg-switch-thumb/40'}`} />
                     </button>
-                    <span className="text-[12px] text-white font-medium">{t('api.web_search')}</span>
+                    <span className="text-[12px] text-strong font-medium">{t('api.web_search')}</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <button
                       onClick={() => toggleSetting('enable_workspace_search')}
-                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.enable_workspace_search ? 'bg-[#4dab9a]' : 'bg-white/10 border border-white/5'}`}
+                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.enable_workspace_search ? 'bg-ok' : 'bg-overlay/10 border border-overlay/5'}`}
                     >
-                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.enable_workspace_search ? 'bg-white shadow-sm translate-x-[12px]' : 'bg-white/40'}`} />
+                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.enable_workspace_search ? 'bg-switch-thumb shadow-sm translate-x-[12px]' : 'bg-switch-thumb/40'}`} />
                     </button>
                     <span className="text-[12px] text-text-primary">{t('api.workspace_search')}</span>
                   </label>
@@ -2785,9 +2802,9 @@ export default function App() {
                   >
                     <button
                       onClick={() => toggleSetting('ask_mode_default')}
-                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.ask_mode_default ? 'bg-[#4dab9a]' : 'bg-white/10 border border-white/5'}`}
+                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.ask_mode_default ? 'bg-ok' : 'bg-overlay/10 border border-overlay/5'}`}
                     >
-                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.ask_mode_default ? 'bg-white shadow-sm translate-x-[12px]' : 'bg-white/40'}`} />
+                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.ask_mode_default ? 'bg-switch-thumb shadow-sm translate-x-[12px]' : 'bg-switch-thumb/40'}`} />
                     </button>
                     {apiKeyError && <span className="text-[10px] text-err" title={apiKeyError}>{t('api.api_key_load_failed')}</span>}
                     <span className="text-[12px] text-text-primary">{t('api.ask_mode')}</span>
@@ -2795,9 +2812,9 @@ export default function App() {
                   <label className="flex items-center gap-2 cursor-pointer select-none">
                     <button
                       onClick={() => toggleSetting('debug_logging')}
-                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.debug_logging ? 'bg-[#4dab9a]' : 'bg-white/10 border border-white/5'}`}
+                      className={`relative w-7 h-4 rounded-full transition-colors duration-200 cursor-pointer border-none ${settings.debug_logging ? 'bg-ok' : 'bg-overlay/10 border border-overlay/5'}`}
                     >
-                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.debug_logging ? 'bg-white shadow-sm translate-x-[12px]' : 'bg-white/40'}`} />
+                      <span className={`absolute top-[2px] left-[2px] w-3 h-3 rounded-full transition-all duration-200 ${settings.debug_logging ? 'bg-switch-thumb shadow-sm translate-x-[12px]' : 'bg-switch-thumb/40'}`} />
                     </button>
                     <span className="text-[12px] text-text-primary">{t('api.debug_log')}</span>
                   </label>
@@ -2886,7 +2903,7 @@ export default function App() {
             <button
               onClick={() => setSelectedAccounts(new Map())}
               disabled={selectedAccounts.size === 0 || batchBusy}
-              className="px-3 py-1.5 bg-transparent hover:bg-white/[.05] text-text-muted hover:text-text-primary rounded-md text-[12px] cursor-pointer border border-transparent disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 bg-transparent hover:bg-overlay/[.05] text-text-muted hover:text-text-primary rounded-md text-[12px] cursor-pointer border border-transparent disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {t('common.clear_selection')}
             </button>

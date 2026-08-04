@@ -1,6 +1,44 @@
 @import "tailwindcss";
 
 @theme {
+  --color-bg-primary: #f7f7f5;
+  --color-bg-secondary: #ffffff;
+  --color-bg-card: #ffffff;
+  --color-bg-card-hover: #f1f1ef;
+  --color-bg-exhausted: #fff3f0;
+  --color-bg-input: #f7f7f5;
+  --color-text-primary: #1f1f1d;
+  --color-text-secondary: #575653;
+  --color-text-muted: #787774;
+  --color-notion-blue: #0b6fc2;
+  --color-notion-blue-hover: #075fa9;
+  --color-ok: #168b73;
+  --color-warn: #b7791f;
+  --color-err: #d64545;
+  --color-border: rgba(15, 23, 42, 0.11);
+  --color-research: #7c3aed;
+  --color-premium: #2563a8;
+  --color-output: #7c3aed;
+  --color-overlay: #111827;
+  --color-strong: #111827;
+  --color-on-color: #ffffff;
+  --color-action-primary: #111827;
+  --color-action-primary-hover: #273244;
+  --color-action-primary-foreground: #ffffff;
+  --color-switch-thumb: #ffffff;
+  --color-brand-mark: #111827;
+  --color-brand-mark-foreground: #ffffff;
+  --color-nav: #efefec;
+  --color-shadow: #0f172a;
+}
+
+html {
+  color-scheme: light;
+  background: var(--color-bg-primary);
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
   --color-bg-primary: #191919;
   --color-bg-secondary: #202020;
   --color-bg-card: #252525;
@@ -8,15 +46,28 @@
   --color-bg-exhausted: #2a1f1f;
   --color-bg-input: #2f2f2f;
   --color-text-primary: #ebebea;
-  --color-text-secondary: #9b9a97;
-  --color-text-muted: #858481;
+  --color-text-secondary: #aaa9a5;
+  --color-text-muted: #8f8e8a;
   --color-notion-blue: #2383e2;
   --color-notion-blue-hover: #1a73d4;
   --color-ok: #4dab9a;
   --color-warn: #d9a651;
   --color-err: #eb5757;
-  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border: rgba(255, 255, 255, 0.07);
   --color-research: #b39ddb;
+  --color-premium: #7eb8ff;
+  --color-output: #9b72cf;
+  --color-overlay: #ffffff;
+  --color-strong: #ffffff;
+  --color-on-color: #ffffff;
+  --color-action-primary: #ffffff;
+  --color-action-primary-hover: #e8e8e6;
+  --color-action-primary-foreground: #111111;
+  --color-switch-thumb: #ffffff;
+  --color-brand-mark: #333333;
+  --color-brand-mark-foreground: #ffffff;
+  --color-nav: #191919;
+  --color-shadow: #000000;
 }
 
 * {
@@ -32,6 +83,23 @@ body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+html[data-theme="light"] body {
+  background-image: radial-gradient(circle at 50% -20%, rgba(35, 131, 226, 0.055), transparent 42rem);
+  background-attachment: fixed;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-notion-blue) 24%, transparent);
 }
 
 :focus-visible {
@@ -41,13 +109,17 @@ body {
 
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--color-overlay) 14%, transparent);
   border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-overlay) 22%, transparent);
 }
 
 @keyframes spin {

@@ -172,7 +172,7 @@ export function RequestHistoryDrawer({ open, onClose }: Props) {
           </div>
         </div>
 
-        <div className="px-5 py-3 border-b border-border bg-[#171717] max-sm:px-3">
+        <div className="px-5 py-3 border-b border-border bg-bg-primary max-sm:px-3">
           <div className="text-[11px] text-text-secondary mb-3 leading-relaxed">
             {t('request_history.privacy_summary')}
             <span className="text-ok ml-1">{t('request_history.privacy_detail')}</span>
@@ -182,7 +182,7 @@ export function RequestHistoryDrawer({ open, onClose }: Props) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={t('request_history.search')}
-              className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-[12px] text-text-primary outline-none focus:border-white/20 placeholder:text-text-muted"
+              className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-[12px] text-text-primary outline-none focus:border-overlay/20 placeholder:text-text-muted"
             />
             <FilterSelect value={status} onChange={setStatus}>
               <option value="all">{t('request_history.all_statuses')}</option>
@@ -220,7 +220,7 @@ export function RequestHistoryDrawer({ open, onClose }: Props) {
           )}
           {entries.length > 0 && (
             <div className="min-w-[1040px]">
-              <div className="sticky top-0 z-10 grid grid-cols-[150px_88px_110px_minmax(220px,1.35fr)_minmax(170px,1fr)_150px_70px_105px_80px] gap-3 px-5 py-2 bg-[#1d1d1d] border-b border-border text-[10px] uppercase tracking-wider text-text-muted">
+              <div className="sticky top-0 z-10 grid grid-cols-[150px_88px_110px_minmax(220px,1.35fr)_minmax(170px,1fr)_150px_70px_105px_80px] gap-3 px-5 py-2 bg-bg-primary border-b border-border text-[10px] uppercase tracking-wider text-text-muted">
                 <span>{t('request_history.time')}</span>
                 <span>{t('request_history.status')}</span>
                 <span>{t('request_history.api')}</span>
@@ -231,7 +231,7 @@ export function RequestHistoryDrawer({ open, onClose }: Props) {
                 <span>Token</span>
                 <span>{t('request_history.duration')}</span>
               </div>
-              <div className="divide-y divide-white/[.05]">
+              <div className="divide-y divide-overlay/[.05]">
                 {entries.map((entry) => (
                   <RequestRow
                     key={entry.id}
@@ -291,7 +291,7 @@ function FilterSelect({
     <select
       value={value}
       onChange={(event) => onChange(event.target.value)}
-      className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-[12px] text-text-primary outline-none focus:border-white/20 cursor-pointer"
+      className="w-full px-3 py-2 bg-bg-input border border-border rounded-md text-[12px] text-text-primary outline-none focus:border-overlay/20 cursor-pointer"
     >
       {children}
     </select>
@@ -318,7 +318,7 @@ function RequestRow({
   const notionModel = entry.notion_model || t('request_history.not_sent')
 
   return (
-    <div className={`px-5 py-3 ${success ? 'hover:bg-white/[.015]' : 'bg-err/[.025] hover:bg-err/[.045]'}`}>
+    <div className={`px-5 py-3 ${success ? 'hover:bg-overlay/[.015]' : 'bg-err/[.025] hover:bg-err/[.045]'}`}>
       <div className="grid grid-cols-[150px_88px_110px_minmax(220px,1.35fr)_minmax(170px,1fr)_150px_70px_105px_80px] gap-3 items-start">
         <div className="text-[11px] text-text-secondary tabular-nums leading-5">
           <div>{created}</div>
@@ -378,7 +378,7 @@ function RequestRow({
           <DiagnosticItem label={t('request_history.context_mode')} value={formatDiagnosticValue(entry.context_mode)} mono />
         </div>
         {(entry.attempt_details?.length ?? 0) > 0 && (
-          <div className="mt-2 border-t border-white/[.05] pt-2">
+          <div className="mt-2 border-t border-overlay/[.05] pt-2">
             <div className="text-[10px] text-text-muted mb-1">{t('request_history.attempt_timeline')}</div>
             <div className="space-y-1">
               {entry.attempt_details!.map((attempt, index) => (

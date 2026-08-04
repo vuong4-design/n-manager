@@ -205,7 +205,7 @@ export function RegisterModal({ open, onClose, onJobFinished }: Props) {
                 <button
                   onClick={handleSubmit}
                   disabled={submitting || !input.trim()}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-white hover:bg-white/90 text-[#111] rounded-md text-[13px] font-medium cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-md text-[13px] font-medium cursor-pointer transition-colors border-none disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {submitting ? <IconSpinner size={13} className="animate-spin" /> : <IconPlay size={13} />}
                   {t('modal.register.start_register')}
@@ -219,7 +219,7 @@ export function RegisterModal({ open, onClose, onJobFinished }: Props) {
               </span>
               <button
                 onClick={onClose}
-                className="px-4 py-1.5 bg-white hover:bg-white/90 text-[#111] rounded-md text-[13px] font-medium cursor-pointer border-none"
+                className="px-4 py-1.5 bg-action-primary hover:bg-action-primary-hover text-action-primary-foreground rounded-md text-[13px] font-medium cursor-pointer border-none"
               >
                 {job.state === 'running' ? t('modal.register.run_in_background') : t('modal.register.complete')}
               </button>
@@ -250,7 +250,7 @@ function ProviderTabs({
           const baseCls =
             'px-3 py-2 text-[12px] font-medium border-none bg-transparent border-b-2 transition-colors cursor-pointer'
           const cls = isSelected
-            ? 'border-white text-text-primary'
+            ? 'border-overlay text-text-primary'
             : isEnabled
             ? 'border-transparent text-text-secondary hover:text-text-primary'
             : 'border-transparent text-text-muted cursor-not-allowed opacity-50'
@@ -315,7 +315,7 @@ function InputForm({
           onChange={(e) => onInput(e.target.value)}
           placeholder={placeholder}
           rows={12}
-          className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-[12px] text-text-primary outline-none focus:border-white/20 transition-colors placeholder:text-text-muted font-mono leading-relaxed resize-y"
+          className="w-full bg-bg-input border border-border rounded-md px-3 py-2 text-[12px] text-text-primary outline-none focus:border-overlay/20 transition-colors placeholder:text-text-muted font-mono leading-relaxed resize-y"
           spellCheck={false}
         />
         <div className="flex justify-between items-center mt-1">
@@ -333,7 +333,7 @@ function InputForm({
             const n = parseInt(e.target.value, 10)
             onConcurrency(Number.isFinite(n) && n > 0 ? n : 1)
           }}
-          className="w-20 bg-bg-input border border-border rounded-md px-2 py-1 text-[13px] text-text-primary outline-none focus:border-white/20 transition-colors text-center tabular-nums"
+          className="w-20 bg-bg-input border border-border rounded-md px-2 py-1 text-[13px] text-text-primary outline-none focus:border-overlay/20 transition-colors text-center tabular-nums"
         />
         <span className="inline-flex items-center gap-1 text-[11px] text-text-muted">
           <IconAlert size={12} className="text-warn" />
@@ -354,7 +354,7 @@ function InputForm({
               ? t('modal.register.proxy_placeholder_global', { url: globalProxy })
               : t('modal.register.proxy_placeholder_direct')
           }
-          className="w-full bg-bg-input border border-border rounded-md px-3 py-1.5 text-[12px] text-text-primary outline-none focus:border-white/20 transition-colors placeholder:text-text-muted font-mono"
+          className="w-full bg-bg-input border border-border rounded-md px-3 py-1.5 text-[12px] text-text-primary outline-none focus:border-overlay/20 transition-colors placeholder:text-text-muted font-mono"
           spellCheck={false}
           autoComplete="off"
         />
@@ -403,7 +403,7 @@ function ProgressPanel({
             {t('modal.register.progress_info', { current: done, total, ok, failed: fail, concurrency: job.concurrency })}
           </span>
         </div>
-        <div className="h-1.5 bg-white/[.06] rounded-full overflow-hidden">
+        <div className="h-1.5 bg-overlay/[.06] rounded-full overflow-hidden">
           <div
             className={`h-full rounded-full transition-all duration-500 ${job.state === 'running' ? 'bg-notion-blue' : fail > 0 ? 'bg-warn' : 'bg-ok'}`}
             style={{ width: `${pct}%` }}
@@ -416,7 +416,7 @@ function ProgressPanel({
         )}
       </div>
 
-      <div className="border border-border rounded-md divide-y divide-white/[.05] max-h-[420px] overflow-auto">
+      <div className="border border-border rounded-md divide-y divide-overlay/[.05] max-h-[420px] overflow-auto">
         {job.steps.map((s, i) => (
           <StepRow key={`${s.email}-${i}`} step={s} index={i} />
         ))}

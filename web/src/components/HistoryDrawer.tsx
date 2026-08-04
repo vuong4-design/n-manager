@@ -172,7 +172,7 @@ export function HistoryDrawer({ open, onClose, onRetryStarted }: Props) {
             <div className="text-center py-16 text-text-secondary text-[13px]">{t('history.no_tasks')}</div>
           )}
           {jobs.length > 0 && (
-            <div className="divide-y divide-white/[.05]">
+            <div className="divide-y divide-overlay/[.05]">
               {jobs.map((job) => (
                 <JobRow
                   key={job.id}
@@ -246,7 +246,7 @@ function JobRow({
                 {stateLabel}
               </span>
               {job.provider && (
-                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/[.06] text-text-secondary">
+                <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-overlay/[.06] text-text-secondary">
                   {providerDisplay(job.provider)}
                 </span>
               )}
@@ -256,7 +256,7 @@ function JobRow({
               <span className="text-[11px] text-text-muted">{t('history.concurrency', { count: job.concurrency })}</span>
               {proxyShort && (
                 <span
-                  className="text-[10px] px-1.5 py-0.5 rounded bg-white/[.04] text-text-muted font-mono"
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-overlay/[.04] text-text-muted font-mono"
                   title={t('history.proxy', { url: job.proxy })}
                 >
                   via {proxyShort}
@@ -306,7 +306,7 @@ function JobRow({
         </div>
       )}
       {expanded && (
-        <div className="mt-2 ml-6 border border-border rounded-md divide-y divide-white/[.05] max-h-[420px] overflow-auto">
+        <div className="mt-2 ml-6 border border-border rounded-md divide-y divide-overlay/[.05] max-h-[420px] overflow-auto">
           {(detail || job).steps.map((s, i) => (
             <DetailStep key={`${s.email}-${i}`} step={s} index={i} />
           ))}

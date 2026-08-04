@@ -15,7 +15,12 @@
     "dashboard": "Dashboard",
     "accounts": "Accounts",
     "settings": "Settings & History",
-    "version": "Running version: {{version}}"
+    "version": "Running version: {{version}}",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "switch_to_dark": "Switch to dark mode",
+    "switch_to_light": "Switch to light mode"
   },
   "dashboard": {
     "title": "Dashboard",

@@ -101,14 +101,14 @@ export function AccountMenu({ account, onChanged }: Props) {
           e.stopPropagation()
           setOpen((v) => !v)
         }}
-        className="w-6 h-6 rounded hover:bg-white/[.08] text-text-secondary hover:text-text-primary flex items-center justify-center bg-transparent border-none cursor-pointer transition-colors"
+        className="w-6 h-6 rounded hover:bg-overlay/[.08] text-text-secondary hover:text-text-primary flex items-center justify-center bg-transparent border-none cursor-pointer transition-colors"
         title={t('menu.more_actions')}
       >
         <IconMore size={14} />
       </button>
       {open && (
         <div
-          className="absolute right-0 top-7 z-30 w-44 bg-bg-secondary border border-border rounded-md shadow-xl shadow-black/40 py-1"
+          className="absolute right-0 top-7 z-30 w-44 bg-bg-secondary border border-border rounded-md shadow-xl shadow-shadow/40 py-1"
           onClick={(e) => e.stopPropagation()}
         >
           <MenuItem
@@ -158,7 +158,7 @@ function MenuItem({
       className={`w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left bg-transparent border-none cursor-pointer transition-colors ${
         danger
           ? 'text-err hover:bg-err/10'
-          : 'text-text-secondary hover:text-text-primary hover:bg-white/[.05]'
+          : 'text-text-secondary hover:text-text-primary hover:bg-overlay/[.05]'
       } disabled:opacity-40 disabled:cursor-not-allowed`}
     >
       <span className="shrink-0">{icon}</span>
