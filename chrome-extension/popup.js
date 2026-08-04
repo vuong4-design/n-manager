@@ -3,7 +3,11 @@ const STRINGS = {
     subtitle: '一键提取账号配置，用于 Notion AI Proxy',
     statusInitial: '点击下方按钮，在 Notion 页面上提取账号配置。',
     extractBtn: '⚡ 提取配置',
-    copyBtn: '📋 复制 JSON 配置',
+    copyBtn: '📋 复制 token_v2',
+    addBtn: '➕ 添加到 Dashboard',
+    adding: '添加中...',
+    addedToDashboard: '✅ 已添加到 Dashboard',
+    copyInstead: '请改用复制 token_v2',
     extracting: '<span class="spinner"></span>正在提取配置...',
     noCookies: '未找到 notion.so cookies。请先登录 Notion。',
     noToken: '未找到 token_v2 cookie。请先登录 Notion。',
@@ -23,7 +27,11 @@ const STRINGS = {
     subtitle: 'One-click account config extractor for Notion AI Proxy',
     statusInitial: 'Click the button below to extract the account configuration on the Notion page.',
     extractBtn: '⚡ Extract Config',
-    copyBtn: '📋 Copy JSON Config',
+    copyBtn: '📋 Copy token_v2',
+    addBtn: '➕ Add to Dashboard',
+    adding: 'Adding...',
+    addedToDashboard: '✅ Added to Dashboard',
+    copyInstead: 'try Copy token_v2 instead',
     extracting: '<span class="spinner"></span>Extracting configuration...',
     noCookies: 'No notion.so cookies found. Please log in to Notion first.',
     noToken: 'No token_v2 cookie found. Please log in to Notion first.',
@@ -67,22 +75,66 @@ async function extract() {
 
   try {
     // Step 1: Get all cookies via chrome.cookies API (can read HttpOnly!)
-    const allCookies = await new Promise((resolve, reject) => {
-      chrome.cookies.getAll({ domain: 'notion.so' }, (cookies) => {
-        if (cookies && cookies.length > 0) resolve(cookies);
-        else reject(new Error(s.noCookies));
+    // Query multiple domain variants because token_v2 may be host-only on
+    // notion.so (not a subdomain) and chrome.cookies.getAll domain matching
+    // is exact-ish. Also try url-based query as a fallback.
+    const cookieDomains = ['notion.so', 'www.notion.so', '.notion.so', 'notion.com', 'www.notion.com', '.notion.com', 'app.notion.com'];
+    let allCookies = [];
+    const _debugPerDomain = [];
+    const _seen = new Set();
+    for (const d of cookieDomains) {
+      const cks = await new Promise((resolve) => {
+        chrome.cookies.getAll({ domain: d }, (cookies) => resolve(cookies || []));
       });
-    });
+      _debugPerDomain.push(`${d}: ${cks.length} cookies`);
+      for (const c of cks) {
+        const key = `${c.domain}|${c.name}|${c.path}`;
+        if (!_seen.has(key)) { _seen.add(key); allCookies.push(c); }
+      }
+    }
+    if (allCookies.length === 0) {
+      // Fallback: url-based query on both domains
+      for (const u of ['https://www.notion.so', 'https://app.notion.com', 'https://www.notion.com']) {
+        const urlCks = await new Promise((resolve) => {
+          chrome.cookies.getAll({ url: u }, (cookies) => resolve(cookies || []));
+        });
+        _debugPerDomain.push(`url ${u}: ${urlCks?.length || 0} cookies`);
+        for (const c of urlCks) {
+          const key = `${c.domain}|${c.name}|${c.path}`;
+          if (!_seen.has(key)) { _seen.add(key); allCookies.push(c); }
+        }
+      }
+    }
+    if (allCookies.length === 0) throw new Error(s.noCookies);
 
+    // Dedupe by name (keep first occurrence)
     const cookieMap = {};
-    for (const c of allCookies) cookieMap[c.name] = c.value;
+    for (const c of allCookies) {
+      if (!(c.name in cookieMap)) cookieMap[c.name] = c.value;
+    }
 
     const token = cookieMap['token_v2'];
-    if (!token) throw new Error(s.noToken);
+    if (!token) {
+      // Debug: show what cookies we DID find so the user can troubleshoot
+      const debugInfo = allCookies.map(c => `${c.domain} ${c.name} (${c.hostOnly ? 'host-only' : 'domain'})`).join('\n');
+      const domainDebug = _debugPerDomain.join('\n');
+      throw new Error(`${s.noToken}\n\n[debug] per-domain:\n${domainDebug}\n\n[debug] found ${allCookies.length} cookies:\n${debugInfo}`);
+    }
+
+    // Store token globally for copy button
+    window._extractedToken = token;
 
     const browserId = cookieMap['notion_browser_id'] || '';
     const deviceId = cookieMap['device_id'] || '';
     const fullCookie = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+    // Dedupe by name for fullCookie too (avoid duplicate cookie headers)
+    const seenNames = new Set();
+    const fullCookieParts = [];
+    for (const c of allCookies) {
+      if (!seenNames.has(c.name)) { seenNames.add(c.name); fullCookieParts.push(`${c.name}=${c.value}`); }
+    }
+    const fullCookieStr = fullCookieParts.join('; ');
 
     // Generate a browser_id if cookie doesn't exist
     const effectiveBrowserId = browserId || crypto.randomUUID();
@@ -92,7 +144,7 @@ async function extract() {
     // Step 2: Get active tab and inject script to call Notion APIs
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-    if (!tab?.url?.includes('notion.so')) {
+    if (!tab?.url?.includes('notion.so') && !tab?.url?.includes('notion.com')) {
       throw new Error(s.openNotionFirst);
     }
 
@@ -225,7 +277,7 @@ async function extract() {
       client_version: accountData.client_version,
       browser_id: effectiveBrowserId,
       device_id: deviceId,
-      full_cookie: fullCookie,
+      full_cookie: fullCookieStr,
       available_models: accountData.available_models,
       extracted_at: new Date().toISOString()
     };
@@ -249,7 +301,8 @@ async function extract() {
     modelTags.innerHTML = config.available_models
       .map(m => `<span class="model-tag">${m.name}</span>`).join('');
 
-    document.getElementById('configJson').value = JSON.stringify(config, null, 2);
+    // Show token preview
+    document.getElementById('tokenPreview').textContent = config.token_v2.substring(0, 30) + '...';
     resultEl.classList.remove('hidden');
 
   } catch (err) {
@@ -260,22 +313,53 @@ async function extract() {
   }
 }
 
-function copyConfig() {
-  const textarea = document.getElementById('configJson');
-  textarea.select();
-  document.execCommand('copy');
+function copyToken() {
+  const token = window._extractedToken;
+  if (!token) return;
+  navigator.clipboard.writeText(token).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = STRINGS[currentLang].copied;
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = STRINGS[currentLang].copyBtn;
+      btn.classList.remove('copied');
+    }, 2000);
+  });
+}
 
-  const btn = document.getElementById('copyBtn');
-  btn.textContent = STRINGS[currentLang].copied;
-  btn.classList.add('copied');
-  setTimeout(() => {
-    btn.textContent = STRINGS[currentLang].copyBtn;
-    btn.classList.remove('copied');
-  }, 2000);
+async function addToDashboard() {
+  const token = window._extractedToken;
+  if (!token) return;
+  const btn = document.getElementById('addBtn');
+  const statusEl = document.getElementById('status');
+  btn.disabled = true;
+  btn.textContent = STRINGS[currentLang].adding;
+
+  try {
+    const resp = await fetch('http://localhost:8081/admin/accounts/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token_v2: token })
+    });
+    const data = await resp.json();
+    if (resp.ok && !data.error) {
+      statusEl.className = 'status success';
+      statusEl.textContent = STRINGS[currentLang].addedToDashboard + (data.email ? ` (${data.email})` : '');
+      btn.textContent = '✅';
+    } else {
+      throw new Error(data.error || `HTTP ${resp.status}`);
+    }
+  } catch (err) {
+    statusEl.className = 'status error';
+    statusEl.textContent = '❌ ' + (err.message || 'Failed to add') + ' — ' + STRINGS[currentLang].copyInstead;
+    btn.disabled = false;
+    btn.textContent = STRINGS[currentLang].addBtn;
+  }
 }
 
 document.getElementById('extractBtn').addEventListener('click', extract);
-document.getElementById('copyBtn').addEventListener('click', copyConfig);
+document.getElementById('copyBtn').addEventListener('click', copyToken);
+document.getElementById('addBtn').addEventListener('click', addToDashboard);
 document.getElementById('langToggleBtn').addEventListener('click', () => {
   currentLang = currentLang === 'zh' ? 'en' : 'zh';
   localStorage.setItem('notion-ext-lang', currentLang);

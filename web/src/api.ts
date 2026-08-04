@@ -203,7 +203,7 @@ export async function fetchDashboardData(params: AccountListParams = {}): Promis
   if (params.status && params.status !== 'all') sp.set('status', params.status)
   const qs = sp.toString()
   const url = qs ? `/admin/accounts?${qs}` : '/admin/accounts'
-  const resp = await fetch(url)
+  const resp = await fetch(url, { credentials: 'same-origin' })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return resp.json()
 }
@@ -239,13 +239,13 @@ export async function fetchAllDashboardData(
 
 export async function triggerRefresh(): Promise<{ started: boolean; message?: string }> {
   // Uses dashboard session cookie for auth (not API key)
-  const resp = await fetch('/admin/refresh', { method: 'POST' })
+  const resp = await fetch('/admin/refresh', { method: 'POST', credentials: 'same-origin' })
   return resp.json()
 }
 
 export async function fetchTokenStats(): Promise<TokenStats> {
   // Uses dashboard session cookie for auth (not API key)
-  const resp = await fetch('/admin/stats')
+  const resp = await fetch('/admin/stats', { credentials: 'same-origin' })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return resp.json()
 }
@@ -599,7 +599,7 @@ export interface SearchSettings {
 
 export async function fetchSettings(): Promise<SearchSettings> {
   // Uses dashboard session cookie for auth (not API key)
-  const resp = await fetch('/admin/settings')
+  const resp = await fetch('/admin/settings', { credentials: 'same-origin' })
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   return resp.json()
 }
@@ -610,6 +610,7 @@ export async function updateSettings(settings: Partial<Pick<SearchSettings, 'ena
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
+    credentials: 'same-origin',
   })
   if (!resp.ok) {
     // Surface server-side validation errors (e.g. unsupported proxy

@@ -27,12 +27,15 @@ _*.json.*
 _hazel_cookies.json*
 consent_traffic.json
 logs/
+.catdesk
 
 # Debug/temp
 debug_response.jsonl
 proxy_stderr.log
 server.log
 server.stderr.log
+nm-err.log
+nm-out.log
 test_*.json
 api_probes/
 claude_code_system_dump.*

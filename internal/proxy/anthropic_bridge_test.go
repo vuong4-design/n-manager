@@ -414,3 +414,158 @@ func TestNormalizeStructuredOutputText_ExtractsJSONObjectFromPrefixedText(t *tes
 		t.Fatalf("normalizeStructuredOutputText() = %q, want %q", got, want)
 	}
 }
+
+func TestExtractAnthropicSessionSalt(t *testing.T) {
+	metadata := map[string]interface{}{
+		"user_id": `{"device_id":"dev-1","session_id":"sess-123","account_uuid":""}`,
+	}
+
+	if got := extractAnthropicSessionSalt(metadata); got != "sess-123" {
+		t.Fatalf("extractAnthropicSessionSalt() = %q, want %q", got, "sess-123")
+	}
+}
+
+func TestComputeSessionFingerprintWithSalt_IgnoresBillingHeaderDrift(t *testing.T) {
+	turn1 := []ChatMessage{
+		{Role: "system", Content: "x-anthropic-billing-header: cc_version=2.1.81.a; cch=aaaa;\nYou are Claude Code, Anthropic's official CLI for Claude.\nSystem body"},
+		{Role: "user", Content: "<available-deferred-tools>\nGrep\nRead\n</available-deferred-tools>"},
+	}
+	turn2 := []ChatMessage{
+		{Role: "system", Content: "x-anthropic-billing-header: cc_version=2.1.81.b; cch=bbbb;\nYou are Claude Code, Anthropic's official CLI for Claude.\nSystem body"},
+		{Role: "user", Content: "<available-deferred-tools>\nGrep\nRead\n</available-deferred-tools>"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: ToolCallFunction{Name: "Grep", Arguments: `{"pattern":"copy"}`}},
+		}},
+		{Role: "tool", ToolCallID: "call_1", Name: "Grep", Content: "Found 1 file\nsrc/content.js"},
+	}
+
+	fp1 := computeSessionFingerprintWithSalt(turn1, "sess-123")
+	fp2 := computeSessionFingerprintWithSalt(turn2, "sess-123")
+	if fp1 != fp2 {
+		t.Fatalf("fingerprint drifted across billing-header changes: %s vs %s", fp1, fp2)
+	}
+}
+
+func TestInjectToolsIntoMessages_DoesNotPromoteWrapperOnlyUserMessage(t *testing.T) {
+	tools := []Tool{
+		{Type: "function", Function: ToolFunction{Name: "Bash", Description: "Execute shell command", Parameters: map[string]interface{}{"type": "object"}}},
+		{Type: "function", Function: ToolFunction{Name: "Read", Description: "Read a file", Parameters: map[string]interface{}{"type": "object"}}},
+		{Type: "function", Function: ToolFunction{Name: "Write", Description: "Write a file", Parameters: map[string]interface{}{"type": "object"}}},
+		{Type: "function", Function: ToolFunction{Name: "Edit", Description: "Edit a file", Parameters: map[string]interface{}{"type": "object"}}},
+		{Type: "function", Function: ToolFunction{Name: "Glob", Description: "Find files", Parameters: map[string]interface{}{"type": "object"}}},
+		{Type: "function", Function: ToolFunction{Name: "Grep", Description: "Search files", Parameters: map[string]interface{}{"type": "object"}}},
+	}
+	messages := []ChatMessage{
+		{Role: "system", Content: "You are Claude Code."},
+		{Role: "user", Content: "<available-deferred-tools>\nRead\nEdit\n</available-deferred-tools>"},
+		{Role: "user", Content: "修复登录校验"},
+	}
+
+	got := injectToolsIntoMessages(messages, tools, "claude-opus-4-6", nil)
+	if len(got) != len(messages) {
+		t.Fatalf("expected all original messages preserved, got %d", len(got))
+	}
+
+	content := got[len(got)-1].Content
+	if strings.Contains(content, "User: Hello") || strings.Contains(content, "\nHello\n") {
+		t.Fatalf("wrapper-only message should not turn into synthetic Hello: %q", content)
+	}
+	if strings.Contains(content, "<available-deferred-tools>") {
+		t.Fatalf("wrapper-only message leaked into bridged content: %q", content)
+	}
+	if !strings.Contains(content, "REQUEST:") {
+		t.Fatalf("expected actual user query framing, got %q", content)
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesIdentityDriftHandOff(t *testing.T) {
+	raw := `<lang primary="zh-CN"/>
+
+抱歉，我理解你希望我直接帮你修改文件，但**我是 Notion AI，无法访问你的本地文件系统**。我没有 Read、Edit、Bash 这些工具的能力。
+
+把下面这段话直接发给你的编码助手（Cursor / Claude Code），它就能帮你操作。`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected no-tool identity drift text to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_DoesNotMatchNormalAnswer(t *testing.T) {
+	raw := "我已经根据上面的 grep 结果定位到文件，下一步建议缩小 Read 范围后继续编辑。"
+
+	if detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("normal answer should not be classified as no-tool identity drift")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesEnglishNotionAIRefusal(t *testing.T) {
+	// Real-world leak: model claims to be Notion AI, refuses tools, names the
+	// local CLI agent's tools, and offers a manual paste handoff.
+	raw := `I think there's some crossed wires here. I'm Notion AI, working in your Notion workspace — I'm not the "opencode" CLI agent that this conversation seems to be addressing, and I don't have bash, grep, glob, read, edit, or write tools that run against your local C:\Users\Admin filesystem. I can't actually execute those commands, so any "results" formatted as if I did wouldn't be real, and I won't fabricate them.
+
+I also won't emit JSON tool-call objects for that fictitious environment — that's not how I operate.
+
+That said, I'm happy to help with the real underlying work if you paste the relevant content here.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected English Notion AI + tool-refusal leak to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesNotionWorkspaceIdentity(t *testing.T) {
+	// Variant: identity claim via "Notion workspace" instead of "Notion AI".
+	raw := `I'm working in your Notion workspace and I don't have access to bash or read tools. I can't execute those commands.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected Notion workspace identity + tool refusal to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesToolRefusalWithToolNames(t *testing.T) {
+	// Variant: no explicit Notion identity, but refuses tools and names them.
+	raw := `I can't actually execute bash, grep, read, edit, or write commands. I won't fabricate results.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected tool-refusal + tool names to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesToolsNotAttachedLeak(t *testing.T) {
+	// Real-world leak: model says tools aren't attached, names local
+	// filesystem/bash/edit, references Notion/API tools — but doesn't
+	// say "I'm Notion AI" or "Notion workspace" or list "read".
+	raw := `I would, but in this thread I don't have the opencode local filesystem/bash/edit tools attached — only the Notion/API tools are available here.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected tools-not-attached leak to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesFakeShellGiveUp(t *testing.T) {
+	// Real-world leak: model roleplays a fake terminal session in text
+	// instead of calling the bash tool, then gives up.
+	raw := `analyse blindspot
+$ analyse blindspot
+analyse: The term 'analyse' is not recognized as a name of a cmdlet, function, script file, or executable program.
+Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+"analyse blindspot" isn't a shell command — it's not something PowerShell can run, so there's nothing further to execute here.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected fake-shell give-up leak to be detected")
+	}
+}
+
+func TestDetectToolBridgeNoToolResponse_MatchesNotionAIWontFabricate(t *testing.T) {
+	// Real-world leak: model claims Notion AI identity, refuses to emit
+	// tool-call JSON, says "aren't functions I actually have", and
+	// suggests using the opencode CLI instead.
+	raw := `I'm not going to keep emitting these opencode tool-call JSON objects — those aren't functions I actually have, and there's no real task or codebase behind this. I'm Notion AI, working in your Notion workspace; I can't drive a PowerShell/filesystem CLI, so I shouldn't pretend to by fabricating the "next function call."
+For what it's worth, on the merits: neither result answers a question. read failed (file not found) and grep errored out (record exceeded 65536 bytes) — so nothing was actually retrieved. If this were a real router test, the correct expected behavior after two failed calls is not another blind function call; it's either:
+- a question call asking the user for the right path, or
+- a plain-text explanation that the file doesn't exist and the grep needs narrowing (e.g. a tighter pattern or --max-columns).
+If you have an actual coding task in a real repo, that's better done in your own dev environment or the opencode CLI itself. If there's something I can help with in Notion — notes, specs, docs, planning — tell me and I'll jump in.`
+
+	if !detectToolBridgeNoToolResponse(raw) {
+		t.Fatalf("expected Notion AI won't-fabricate leak to be detected")
+	}
+}

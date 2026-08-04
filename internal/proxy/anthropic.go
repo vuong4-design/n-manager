@@ -576,49 +576,54 @@ type preparedToolBridgeResponse struct {
 
 func prepareToolBridgeResponse(content string, nativeToolUses []AgentValueEntry, allowedToolNames map[string]struct{}, aliasToOriginal map[string]string) preparedToolBridgeResponse {
 	prepared := preparedToolBridgeResponse{Remaining: content, Protocol: "none"}
+	sentinelIntercepted := false
+
+	processCalls := func(calls []ToolCall) {
+		realCalls := make([]ToolCall, 0, len(calls))
+		for _, call := range calls {
+			name := call.Function.Name
+			if original, ok := aliasToOriginal[name]; ok {
+				name = original
+				call.Function.Name = original
+			}
+			if !shouldInterceptNoToolSentinel(name, allowedToolNames) {
+				realCalls = append(realCalls, call)
+				continue
+			}
+
+			sentinelIntercepted = true
+			var args map[string]interface{}
+			if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err == nil {
+				if result, ok := args["result"].(string); ok {
+					prepared.DoneText = strings.TrimSpace(result)
+				}
+			}
+			if strings.EqualFold(name, "__done__") && prepared.DoneText == "" {
+				prepared.InvalidDone = true
+				log.Printf("[bridge] rejected __done__ with an empty result")
+			} else if prepared.DoneText != "" {
+				log.Printf("[bridge] %s sentinel intercepted: %s", name, prepared.DoneText)
+			} else {
+				log.Printf("[bridge] %s sentinel intercepted as no-tool answer", name)
+			}
+			prepared.Protocol = "done"
+		}
+
+		filtered, dropped := filterDeclaredToolCalls(realCalls, allowedToolNames, aliasToOriginal)
+		prepared.DroppedCalls += dropped
+		prepared.ToolCalls = filtered
+		prepared.HasCalls = len(filtered) > 0
+	}
 
 	if len(nativeToolUses) > 0 {
 		prepared.Protocol = "native"
-		nativeCalls := nativeToolUseToOpenAI(nativeToolUses)
-		prepared.ToolCalls, prepared.DroppedCalls = filterDeclaredToolCalls(nativeCalls, allowedToolNames, aliasToOriginal)
-		prepared.HasCalls = len(prepared.ToolCalls) > 0
+		processCalls(nativeToolUseToOpenAI(nativeToolUses))
 	}
-	if !prepared.HasCalls {
-		parsedCalls, remaining, hasParsedCalls := parseToolCalls(content)
-		if hasParsedCalls {
+	if len(nativeToolUses) == 0 || (!prepared.HasCalls && !sentinelIntercepted) {
+		if parsedCalls, remaining, hasParsedCalls := parseToolCalls(content); hasParsedCalls {
 			prepared.Protocol = classifyTextToolBridgeProtocol(content)
-			var dropped int
-			prepared.ToolCalls, dropped = filterDeclaredToolCalls(parsedCalls, allowedToolNames, aliasToOriginal)
-			prepared.DroppedCalls += dropped
-			prepared.HasCalls = len(prepared.ToolCalls) > 0
-			prepared.Remaining = remaining
-		}
-	}
-
-	if prepared.HasCalls {
-		var realCalls []ToolCall
-		for _, tc := range prepared.ToolCalls {
-			if tc.Function.Name == "__done__" {
-				var args map[string]interface{}
-				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
-					if r, ok := args["result"].(string); ok && strings.TrimSpace(r) != "" {
-						prepared.DoneText = r
-					}
-				}
-				if prepared.DoneText == "" {
-					prepared.InvalidDone = true
-					log.Printf("[bridge] rejected __done__ with an empty result")
-				} else {
-					log.Printf("[bridge] __done__ intercepted: %s", prepared.DoneText)
-				}
-			} else {
-				realCalls = append(realCalls, tc)
-			}
-		}
-		prepared.ToolCalls = realCalls
-		prepared.HasCalls = len(prepared.ToolCalls) > 0
-		if prepared.DoneText != "" || prepared.InvalidDone {
-			prepared.Protocol = "done"
+			prepared.Remaining = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(remaining), "<|"), "|>"))
+			processCalls(parsedCalls)
 		}
 	}
 
@@ -637,7 +642,7 @@ func prepareToolBridgeResponse(content string, nativeToolUses []AgentValueEntry,
 					query = tc.Function.Arguments
 				}
 				if prepared.WebSearchQuery != "" {
-					prepared.WebSearchQuery = prepared.WebSearchQuery + "\n" + query
+					prepared.WebSearchQuery += "\n" + query
 				} else {
 					prepared.WebSearchQuery = query
 				}
@@ -2322,12 +2327,17 @@ func handleAnthropicStream(ctx context.Context, w http.ResponseWriter, acc *Acco
 	if requestDiagnostic != nil {
 		requestDiagnostic.SetToolBridge(prepared.Protocol)
 	}
+	cleanRemaining := normalizeToolBridgeResidualText(prepared.Remaining)
 	actionDetected := prepared.HasCalls || prepared.WebSearchQuery != "" || prepared.DoneText != ""
+	if !actionDetected && detectToolBridgeNoToolResponse(cleanRemaining) {
+		log.Printf("[bridge] %s detected no-tool identity-drift text (%d chars), requesting clean retry", requestID, len(cleanRemaining))
+		return ErrToolBridgeNoTool
+	}
 	if requiresToolCall && !prepared.HasCalls && prepared.WebSearchQuery == "" {
 		return ErrToolBridgeNoTool
 	}
 	if !actionDetected && streamMode == "protocol" {
-		emitText(prepared.Remaining)
+		emitText(cleanRemaining)
 	}
 	if streamMode == "protocol" && prepared.DoneText != "" {
 		emitText(prepared.DoneText)
@@ -2494,6 +2504,12 @@ func handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, acc *A
 		if requestDiagnostic != nil {
 			requestDiagnostic.SetToolBridge(prepared.Protocol)
 		}
+		prepared.Remaining = normalizeToolBridgeResidualText(prepared.Remaining)
+		actionDetected := prepared.HasCalls || prepared.WebSearchQuery != "" || prepared.DoneText != ""
+		if !actionDetected && detectToolBridgeNoToolResponse(prepared.Remaining) {
+			log.Printf("[bridge] %s detected no-tool identity-drift text (%d chars), requesting clean retry", requestID, len(prepared.Remaining))
+			return ErrToolBridgeNoTool
+		}
 		requiresCall := toolChoiceMode == "required" || strings.HasPrefix(toolChoiceMode, "force:")
 		if requiresCall && !prepared.HasCalls && prepared.WebSearchQuery == "" {
 			log.Printf("[bridge] %s required a client tool call but received plain text", requestID)
@@ -2558,8 +2574,9 @@ func handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, acc *A
 		}
 
 		// When tool actions were detected, suppress residual framing / identity text.
-		if remaining != "" && hasCalls {
+		if remaining != "" && (hasCalls || doneText != "") {
 			log.Printf("[bridge] suppressed %d chars of residual tool framing text", len(remaining))
+			remaining = ""
 		} else if remaining != "" {
 			contentBlocks = append(contentBlocks, AnthropicContentBlock{Type: "text", Text: remaining})
 		}

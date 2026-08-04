@@ -114,8 +114,12 @@
   <div id="result" class="hidden">
     <div id="infoRows"></div>
     <div id="modelTags" class="models"></div>
-    <textarea id="configJson" readonly></textarea>
-    <button id="copyBtn" class="btn-copy">📋 复制 JSON 配置</button>
+    <div class="info-row" style="margin-top:8px;">
+      <span class="info-label">token_v2</span>
+      <span id="tokenPreview" class="info-value" style="word-break:break-all;font-size:11px;"></span>
+    </div>
+    <button id="copyBtn" class="btn-copy">📋 Copy token_v2</button>
+    <button id="addBtn" class="btn-primary">➕ Add to Dashboard</button>
   </div>
 
   <script src="popup.js"></script>

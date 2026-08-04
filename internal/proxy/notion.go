@@ -58,14 +58,41 @@ var (
 )
 
 var builtInModelMap = map[string]string{
-	"opus-4.6":         "avocado-froyo-medium",
-	"sonnet-4.6":       "almond-croissant-low",
-	"haiku-4.5":        "anthropic-haiku-4.5",
-	"gpt-5.2":          "oatmeal-cookie",
-	"gpt-5.4":          "oval-kumquat-medium",
+	// Claude / Anthropic
+	"opus-4.6":   "avocado-froyo-medium",
+	"opus-4.7":   "apricot-sorbet-high",
+	"opus-4.8":   "ambrosia-tart-high",
+	"opus-5":     "agave-flan",
+	"sonnet-4.6": "almond-croissant-low",
+	"sonnet-5":   "angel-cake-high",
+	"haiku-4.5":  "anthropic-haiku-4.5",
+
+	// OpenAI
+	"gpt-5.2":       "oatmeal-cookie",
+	"gpt-5.4":       "oval-kumquat-medium",
+	"gpt-5.4-mini":  "oregon-grape-medium",
+	"gpt-5.4-nano":  "otaheite-apple-medium",
+	"gpt-5.5":       "opal-quince-medium",
+	"gpt-5.6-sol":   "orange-mousse",
+	"gpt-5.6-terra": "orchid-muffin",
+	"gpt-5.6-luna":  "olive-jellyroll",
+
+	// Google
 	"gemini-2.5-flash": "vertex-gemini-2.5-flash",
 	"gemini-3-flash":   "gingerbread",
-	"minimax-m2.5":     "fireworks-minimax-m2.5",
+	"gemini-3.1-pro":   "galette-medium-thinking",
+	"gemini-3.5-flash": "vertex-gemini-3.5-flash",
+
+	// Other providers
+	"grok-4.3":        "xigua-mochi-medium",
+	"grok-4.5":        "strawberry-whoopiepie",
+	"grok-build-0.1":  "xinomavro-cake",
+	"kimi-k2.6":       "fireworks-kimi-k2.6",
+	"kimi-k2.7-code":  "fireworks-kimi-k2.7",
+	"kimi-k3":         "fireworks-kimi-k3",
+	"deepseek-v4-pro": "baseten-deepseek-v4-pro",
+	"glm-5.2":         "baseten-glm-5.2",
+	"minimax-m2.5":    "fireworks-minimax-m2.5",
 }
 
 var (

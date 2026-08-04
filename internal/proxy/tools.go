@@ -244,7 +244,7 @@ func filterNativeSearchTools(tools []Tool) ([]Tool, bool) {
 // - <local-command-caveat>: contains "DO NOT respond" which kills the response
 // - Inline tags like <command-name>/clear</command-name>
 var (
-	blockTagRegex  = regexp.MustCompile(`(?s)<(?:system-reminder|local-command-caveat)>.*?</(?:system-reminder|local-command-caveat)>`)
+	blockTagRegex  = regexp.MustCompile(`(?s)<(?:system-reminder|local-command-caveat|available-deferred-tools)>.*?</(?:system-reminder|local-command-caveat|available-deferred-tools)>`)
 	inlineTagRegex = regexp.MustCompile(`(?s)<(?:command-name|command-message|command-args)>.*?</(?:command-name|command-message|command-args)>`)
 )
 
@@ -626,6 +626,21 @@ func parseToolCalls(content string) ([]ToolCall, string, bool) {
 		return toolCalls, strings.TrimSpace(remaining), true
 	}
 
+	// Method 1.7: balanced-brace scan for tool-call JSON embedded in prose,
+	// including pretty-printed and multiple multi-line objects.
+	if embedded := extractToolCallJSONBlocks(content); len(embedded) > 0 {
+		remaining = content
+		for _, block := range embedded {
+			if tc := parseToolCallJSON(block, len(toolCalls)); tc != nil {
+				toolCalls = append(toolCalls, *tc)
+				remaining = strings.Replace(remaining, block, "", 1)
+			}
+		}
+		if len(toolCalls) > 0 {
+			return toolCalls, strings.TrimSpace(remaining), true
+		}
+	}
+
 	// Method 2: direct JSON or {"tool_call": {...}} format
 	remaining = content
 	stripped := strings.TrimSpace(content)
@@ -726,6 +741,70 @@ func parseToolCalls(content string) ([]ToolCall, string, bool) {
 	return nil, content, false
 }
 
+// extractToolCallJSONBlocks returns balanced top-level JSON objects that decode
+// as {"name": ..., "arguments": ...} tool-call envelopes.
+func extractToolCallJSONBlocks(text string) []string {
+	var blocks []string
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' {
+			continue
+		}
+		windowEnd := i + 256
+		if windowEnd > len(text) {
+			windowEnd = len(text)
+		}
+		if !strings.Contains(text[i:windowEnd], `"name"`) {
+			continue
+		}
+
+		depth := 0
+		inString := false
+		escaped := false
+		end := -1
+		for j := i; j < len(text); j++ {
+			ch := text[j]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if inString {
+				if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch ch {
+			case '"':
+				inString = true
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					end = j + 1
+				}
+			}
+			if end >= 0 {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		candidate := text[i:end]
+		var probe struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal([]byte(candidate), &probe) == nil && strings.TrimSpace(probe.Name) != "" && len(bytes.TrimSpace(probe.Arguments)) > 0 {
+			blocks = append(blocks, candidate)
+			i = end - 1
+		}
+	}
+	return blocks
+}
 func parseToolCallJSON(jsonStr string, index int) *ToolCall {
 	var call struct {
 		Name      string          `json:"name"`

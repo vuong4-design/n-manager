@@ -498,3 +498,65 @@ func TestOpenAIResponsesStreamTranscoder_ThinkingBlocks(t *testing.T) {
 		t.Fatalf("missing text content in body:\n%s", body)
 	}
 }
+func TestConvertOpenAIChatCompletionRequest_GeneratesStableSessionID(t *testing.T) {
+	firstTurn := &OpenAIChatCompletionRequest{
+		Model: "gpt-5.4",
+		Messages: []OpenAIChatMessage{
+			{Role: "user", Content: "Inspect the repository status"},
+		},
+	}
+	secondTurn := &OpenAIChatCompletionRequest{
+		Model: "gpt-5.4",
+		Messages: []OpenAIChatMessage{
+			{Role: "user", Content: "Inspect the repository status"},
+			{Role: "assistant", Content: "I need to call a tool."},
+			{Role: "user", Content: "Continue"},
+		},
+	}
+
+	first, err := convertOpenAIChatCompletionRequest(firstTurn)
+	if err != nil {
+		t.Fatalf("first conversion error = %v", err)
+	}
+	second, err := convertOpenAIChatCompletionRequest(secondTurn)
+	if err != nil {
+		t.Fatalf("second conversion error = %v", err)
+	}
+	firstID, firstOK := first.Metadata["session_id"].(string)
+	secondID, secondOK := second.Metadata["session_id"].(string)
+	if !firstOK || !secondOK || firstID == "" {
+		t.Fatalf("session IDs = %#v / %#v", first.Metadata, second.Metadata)
+	}
+	if firstID != secondID {
+		t.Fatalf("session IDs differ: %q != %q", firstID, secondID)
+	}
+}
+
+func TestConvertOpenAIChatCompletionRequest_PreservesMetadataWithoutMutation(t *testing.T) {
+	metadata := map[string]interface{}{"trace_id": "trace-1"}
+	req := &OpenAIChatCompletionRequest{
+		Model:    "gpt-5.4",
+		Metadata: metadata,
+		Messages: []OpenAIChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	converted, err := convertOpenAIChatCompletionRequest(req)
+	if err != nil {
+		t.Fatalf("conversion error = %v", err)
+	}
+	if converted.Metadata["trace_id"] != "trace-1" {
+		t.Fatalf("metadata = %#v", converted.Metadata)
+	}
+	if _, mutated := metadata["session_id"]; mutated {
+		t.Fatalf("request metadata was mutated: %#v", metadata)
+	}
+
+	req.Metadata = map[string]interface{}{"session_id": "client-session"}
+	converted, err = convertOpenAIChatCompletionRequest(req)
+	if err != nil {
+		t.Fatalf("conversion with client session error = %v", err)
+	}
+	if converted.Metadata["session_id"] != "client-session" {
+		t.Fatalf("session_id = %#v", converted.Metadata["session_id"])
+	}
+}

@@ -3,7 +3,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1375,6 +1377,27 @@ func convertOpenAIChatCompletionRequest(req *OpenAIChatCompletionRequest) (*Anth
 	if err != nil {
 		return nil, err
 	}
+	metadata := make(map[string]interface{}, len(req.Metadata)+1)
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	// Reuse a stable Notion conversation for OpenAI-compatible multi-turn
+	// requests. OpenAI clients normally resend the first user message on every
+	// turn, so model + first user content is stable across the conversation.
+	if _, hasSession := metadata["session_id"]; !hasSession {
+		for _, message := range req.Messages {
+			if message.Role != "user" {
+				continue
+			}
+			content, flattenErr := flattenOpenAIContentText(message.Content)
+			if flattenErr != nil {
+				return nil, flattenErr
+			}
+			sessionHash := sha256.Sum256([]byte(model + "\n" + content))
+			metadata["session_id"] = hex.EncodeToString(sessionHash[:8])
+			break
+		}
+	}
 	anthReq := &AnthropicRequest{
 		Model:        model,
 		MaxTokens:    firstNonZero(req.MaxCompletionTokens, req.MaxTokens),
@@ -1387,7 +1410,7 @@ func convertOpenAIChatCompletionRequest(req *OpenAIChatCompletionRequest) (*Anth
 		ToolChoice:   normalizeOpenAIToolChoice(req.ToolChoice, req.FunctionCall),
 		Thinking:     map[string]interface{}{"type": "enabled"},
 		OutputConfig: convertOpenAIResponseFormat(req.ResponseFormat),
-		Metadata:     req.Metadata,
+		Metadata:     metadata,
 	}
 	return anthReq, nil
 }
