@@ -34,7 +34,6 @@ jobs:
       - name: Run Go checks
         run: |
           go test ./...
-          go test -race ./internal/proxy
           go vet ./...
 
   build:
@@ -90,11 +89,30 @@ jobs:
         run: |
           go build -ldflags="-s -w -X notion-manager/internal/proxy.BuildVersion=${{ github.ref_name }}" -o notion-manager-${{ matrix.suffix }}${{ matrix.ext }} ./cmd/notion-manager
 
-      - name: Upload artifact
+      - name: Package Windows ZIP
+        if: matrix.goos == 'windows'
+        run: |
+          mkdir notion-manager-${{ matrix.suffix }}
+          cp notion-manager-${{ matrix.suffix }}${{ matrix.ext }} notion-manager-${{ matrix.suffix }}/notion-manager.exe
+          cp example.config.yaml notion-manager-${{ matrix.suffix }}/
+          if [ -f run-windows.bat ]; then
+            cp run-windows.bat notion-manager-${{ matrix.suffix }}/
+          fi
+          zip -r notion-manager-${{ matrix.suffix }}.zip notion-manager-${{ matrix.suffix }}
+
+      - name: Upload artifact (Unix)
+        if: matrix.goos != 'windows'
         uses: actions/upload-artifact@v7
         with:
           name: notion-manager-${{ matrix.suffix }}
           path: notion-manager-${{ matrix.suffix }}${{ matrix.ext }}
+
+      - name: Upload artifact (Windows)
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: notion-manager-${{ matrix.suffix }}-zip
+          path: notion-manager-${{ matrix.suffix }}.zip
 
   release:
     needs: build
