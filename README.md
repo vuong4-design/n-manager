@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>notion-manager</h1>
+  <h1>n-manager</h1>
   <p><strong>Local account pool, dashboard, and protocol proxy for Notion AI</strong></p>
   <p>Run multiple Notion sessions behind one local entrypoint with pooled accounts, quota visibility, a browser dashboard, an Anthropic-compatible API, bulk Microsoft-SSO account provisioning, and Claude Code compatibility.</p>
 
