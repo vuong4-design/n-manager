@@ -2,8 +2,8 @@ name: Build Windows
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - '**'
 
 permissions:
   contents: read
