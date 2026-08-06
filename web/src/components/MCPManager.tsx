@@ -301,21 +301,26 @@ export function MCPManager({ servers, loading, onReload }: MCPManagerProps) {
   )
 }
 
-export function MCPInstallModal({
+export type MCPAccountActionMode = 'install' | 'remove'
+
+export function MCPAccountActionModal({
+  mode,
   servers,
   selectedCount,
   busy,
   onClose,
-  onInstall,
+  onSubmit,
 }: {
+  mode: MCPAccountActionMode
   servers: MCPServer[]
   selectedCount: number
   busy: boolean
   onClose: () => void
-  onInstall: (serverID: string) => Promise<void> | void
+  onSubmit: (serverID: string) => Promise<void> | void
 }) {
   const { t } = useTranslation()
   const [serverID, setServerID] = useState(servers[0]?.id || '')
+  const isRemove = mode === 'remove'
 
   useEffect(() => {
     if (!servers.some(server => server.id === serverID)) setServerID(servers[0]?.id || '')
@@ -325,12 +330,17 @@ export function MCPInstallModal({
     <div className="fixed inset-0 z-[85] bg-black/55 backdrop-blur-[1px] flex items-center justify-center p-4" onMouseDown={onClose}>
       <div className="w-full max-w-[480px] rounded-xl border border-border bg-bg-primary shadow-2xl" onMouseDown={event => event.stopPropagation()}>
         <div className="px-5 py-4 border-b border-border">
-          <h3 className="text-[16px] font-semibold text-text-primary">{t('mcp.install_title')}</h3>
-          <p className="text-[11px] text-text-muted mt-1">{t('mcp.install_help', { count: selectedCount })}</p>
+          <h3 className="text-[16px] font-semibold text-text-primary">{t(isRemove ? 'mcp.remove_title' : 'mcp.install_title')}</h3>
+          <p className="text-[11px] text-text-muted mt-1">{t(isRemove ? 'mcp.remove_help' : 'mcp.install_help', { count: selectedCount })}</p>
         </div>
-        <div className="p-5">
+        <div className="p-5 space-y-3">
+          {isRemove && (
+            <div className="rounded-lg border border-err/20 bg-err/[.05] p-3 text-[11px] leading-relaxed text-text-secondary">
+              {t('mcp.remove_warning')}
+            </div>
+          )}
           {servers.length === 0 ? (
-            <div className="rounded-lg border border-warn/25 bg-warn/[.06] p-3 text-[11px] text-text-secondary">{t('mcp.install_empty')}</div>
+            <div className="rounded-lg border border-warn/25 bg-warn/[.06] p-3 text-[11px] text-text-secondary">{t(isRemove ? 'mcp.remove_empty' : 'mcp.install_empty')}</div>
           ) : (
             <div className="space-y-2">
               {servers.map(server => (
@@ -340,7 +350,7 @@ export function MCPInstallModal({
                   role="radio"
                   aria-checked={serverID === server.id}
                   onClick={() => setServerID(server.id)}
-                  className={`w-full text-left rounded-lg border p-3 cursor-pointer transition-colors ${serverID === server.id ? 'border-notion-blue bg-notion-blue/[.08]' : 'border-border bg-bg-card hover:bg-bg-card-hover'}`}
+                  className={`w-full text-left rounded-lg border p-3 cursor-pointer transition-colors ${serverID === server.id ? (isRemove ? 'border-err bg-err/[.06]' : 'border-notion-blue bg-notion-blue/[.08]') : 'border-border bg-bg-card hover:bg-bg-card-hover'}`}
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -356,8 +366,13 @@ export function MCPInstallModal({
         </div>
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-border">
           <button type="button" onClick={onClose} disabled={busy} className="h-9 px-4 rounded-md border border-border bg-bg-card hover:bg-bg-card-hover text-[12px] text-text-secondary cursor-pointer disabled:opacity-40">{t('common.cancel')}</button>
-          <button type="button" onClick={() => void onInstall(serverID)} disabled={busy || !serverID} className="h-9 px-4 rounded-md border border-notion-blue/30 bg-notion-blue text-on-color text-[12px] font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
-            {busy ? t('actions.starting') : t('mcp.install_action')}
+          <button
+            type="button"
+            onClick={() => void onSubmit(serverID)}
+            disabled={busy || !serverID}
+            className={`h-9 px-4 rounded-md text-on-color text-[12px] font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${isRemove ? 'border border-err/30 bg-err' : 'border border-notion-blue/30 bg-notion-blue'}`}
+          >
+            {busy ? t('actions.starting') : t(isRemove ? 'mcp.remove_action' : 'mcp.install_action')}
           </button>
         </div>
       </div>

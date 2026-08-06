@@ -746,7 +746,10 @@ func (e *MCPPartialInstallError) Unwrap() error {
 	return e.Err
 }
 
-var mcpInstaller = InstallMCPServer
+var (
+	mcpInstaller = InstallMCPServer
+	mcpRemover   = RemoveMCPServer
+)
 
 // InstallMCPServer reproduces Notion's Custom MCP setup flow using the account
 // cookie directly: validate, create/reuse module, attach to Notion Agent,
@@ -876,6 +879,81 @@ func InstallMCPServer(acc *Account, server *MCPServerConfig) (MCPInstallResult, 
 		return result, &MCPPartialInstallError{Result: result, Err: connectErr}
 	}
 	return result, nil
+}
+
+type MCPRemoveResult struct {
+	ModuleID     string `json:"module_id,omitempty"`
+	Removed      bool   `json:"removed"`
+	RemovedCount int    `json:"removed_count"`
+}
+
+// RemoveMCPServer reproduces Notion's Custom MCP disconnect flow. It removes
+// every assigned workflow module matching the saved server URL from the
+// workspace's Notion Agent settings and archives those modules in one
+// saveTransactionsFanout request. Repeating the operation is a successful
+// no-op once no matching assigned module remains.
+func RemoveMCPServer(acc *Account, server *MCPServerConfig) (MCPRemoveResult, error) {
+	if acc == nil || server == nil {
+		return MCPRemoveResult{}, fmt.Errorf("account and MCP server are required")
+	}
+
+	workspace, err := loadMCPWorkspaceState(acc)
+	if err != nil {
+		return MCPRemoveResult{}, err
+	}
+	modules, err := loadNotionMCPModules(acc, workspace.ModuleIDs)
+	if err != nil {
+		return MCPRemoveResult{}, err
+	}
+
+	matched := make(map[string]bool)
+	matchedIDs := make([]string, 0, 1)
+	for id, module := range modules {
+		if normalizeMCPServerURL(module.Data.ServerURL) != server.URL {
+			continue
+		}
+		matched[id] = true
+		matchedIDs = append(matchedIDs, id)
+	}
+	if len(matchedIDs) == 0 {
+		return MCPRemoveResult{}, nil
+	}
+	sort.Strings(matchedIDs)
+
+	settings := cloneMCPSettings(workspace.Settings)
+	references := mcpModuleReferencesFromSettings(settings)
+	filtered := make([]notionMCPModuleReference, 0, len(references))
+	for _, reference := range references {
+		moduleID := strings.TrimSpace(reference.Pointer.ID)
+		if moduleID == "" {
+			moduleID = strings.TrimSpace(reference.ID)
+		}
+		if matched[moduleID] {
+			continue
+		}
+		filtered = append(filtered, reference)
+	}
+	settings["agent_chat_modules"] = filtered
+
+	operations := make([]notionMCPOperation, 0, len(matchedIDs)+1)
+	operations = append(operations, notionMCPOperation{
+		Pointer: notionMCPPointer{Table: "space_view", ID: workspace.SpaceViewID, SpaceID: acc.SpaceID},
+		Path:    []string{"settings"},
+		Command: "update",
+		Args:    settings,
+	})
+	for _, moduleID := range matchedIDs {
+		operations = append(operations, notionMCPOperation{
+			Pointer: notionMCPPointer{Table: "workflow_module", ID: moduleID, SpaceID: acc.SpaceID},
+			Path:    []string{},
+			Command: "update",
+			Args:    map[string]interface{}{"alive": false},
+		})
+	}
+	if err := saveNotionMCPTransaction(acc, "saveTransactionsFanout", "ConnectionSurfaceTabs.disconnectPersonalMcpServer", operations); err != nil {
+		return MCPRemoveResult{ModuleID: matchedIDs[0], RemovedCount: len(matchedIDs)}, err
+	}
+	return MCPRemoveResult{ModuleID: matchedIDs[0], Removed: true, RemovedCount: len(matchedIDs)}, nil
 }
 
 func HandleAdminMCPServers(store *MCPStore, auth *DashboardAuth) http.HandlerFunc {

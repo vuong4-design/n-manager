@@ -369,3 +369,172 @@ func TestAccountBatchMCPInstallPreservesServerAcrossRetry(t *testing.T) {
 		t.Fatalf("installer calls=%d want 2", calls)
 	}
 }
+
+func TestRemoveMCPServerUpdatesSettingsAndArchivesMatchingModule(t *testing.T) {
+	var paths []string
+	var removalBody map[string]interface{}
+	withMCPNotionServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := decodeMCPRequest(t, r)
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/loadUserContent":
+			_, _ = w.Write([]byte(`{"recordMap":{"space_view":{"view-1":{"value":{"value":{"id":"view-1","space_id":"space-1","settings":{"notify_email_digest":true,"agent_chat_modules":[{"pointer":{"table":"workflow_module","id":"module-target","spaceId":"space-1"},"defaultEnabled":false},{"pointer":{"table":"workflow_module","id":"module-other","spaceId":"space-1"},"defaultEnabled":true}]}}}}}}}`))
+		case "/syncRecordValuesSpaceInitial":
+			_, _ = w.Write([]byte(`{"__version__":3,"workflow_module":{"module-target":{"value":{"value":{"id":"module-target","space_id":"space-1","module_type":"mcpServer","alive":true,"data":{"id":"module-target","serverUrl":"https://mcp.example.test/server/"}}}},"module-other":{"value":{"value":{"id":"module-other","space_id":"space-1","module_type":"mcpServer","alive":true,"data":{"id":"module-other","serverUrl":"https://other.example.test/mcp"}}}}}}`))
+		case "/saveTransactionsFanout":
+			removalBody = body
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	result, err := RemoveMCPServer(&Account{
+		UserID:        "user-1",
+		SpaceID:       "space-1",
+		SpaceViewID:   "view-1",
+		TokenV2:       "token",
+		ClientVersion: DefaultClientVersion,
+	}, &MCPServerConfig{
+		Name: "Workspace MCP",
+		URL:  "https://mcp.example.test/server",
+	})
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if !result.Removed || result.RemovedCount != 1 || result.ModuleID != "module-target" {
+		t.Fatalf("unexpected remove result: %#v", result)
+	}
+	wantPaths := []string{"/loadUserContent", "/syncRecordValuesSpaceInitial", "/saveTransactionsFanout"}
+	if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+		t.Fatalf("paths=%v want %v", paths, wantPaths)
+	}
+
+	transactions, _ := removalBody["transactions"].([]interface{})
+	if len(transactions) != 1 {
+		t.Fatalf("transactions=%#v", removalBody["transactions"])
+	}
+	transaction, _ := transactions[0].(map[string]interface{})
+	debug, _ := transaction["debug"].(map[string]interface{})
+	if debug["userAction"] != "ConnectionSurfaceTabs.disconnectPersonalMcpServer" {
+		t.Fatalf("disconnect user action=%#v", debug)
+	}
+	operations, _ := transaction["operations"].([]interface{})
+	if len(operations) != 2 {
+		t.Fatalf("operations=%#v", transaction["operations"])
+	}
+	settingsOperation, _ := operations[0].(map[string]interface{})
+	settings, _ := settingsOperation["args"].(map[string]interface{})
+	if settingsOperation["command"] != "update" || !strings.Contains(string(mustJSON(t, settingsOperation["path"])), "settings") {
+		t.Fatalf("settings operation=%#v", settingsOperation)
+	}
+	references, _ := settings["agent_chat_modules"].([]interface{})
+	if len(references) != 1 || !strings.Contains(string(mustJSON(t, references[0])), "module-other") {
+		t.Fatalf("filtered references=%#v", settings["agent_chat_modules"])
+	}
+	archiveOperation, _ := operations[1].(map[string]interface{})
+	archivePointer, _ := archiveOperation["pointer"].(map[string]interface{})
+	archiveArgs, _ := archiveOperation["args"].(map[string]interface{})
+	if archivePointer["id"] != "module-target" || archiveOperation["command"] != "update" || archiveArgs["alive"] != false {
+		t.Fatalf("archive operation=%#v", archiveOperation)
+	}
+}
+
+func TestRemoveMCPServerIsNoOpWhenAlreadyAbsent(t *testing.T) {
+	var paths []string
+	withMCPNotionServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = decodeMCPRequest(t, r)
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/loadUserContent" {
+			t.Fatalf("unexpected request for absent MCP: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"recordMap":{"space_view":{"view-1":{"value":{"value":{"id":"view-1","space_id":"space-1","settings":{"agent_chat_modules":[]}}}}}}}`))
+	}))
+
+	result, err := RemoveMCPServer(&Account{
+		UserID:        "user-1",
+		SpaceID:       "space-1",
+		SpaceViewID:   "view-1",
+		TokenV2:       "token",
+		ClientVersion: DefaultClientVersion,
+	}, &MCPServerConfig{Name: "Workspace MCP", URL: "https://mcp.example.test/server"})
+	if err != nil {
+		t.Fatalf("RemoveMCPServer: %v", err)
+	}
+	if result.Removed || result.RemovedCount != 0 || result.ModuleID != "" {
+		t.Fatalf("unexpected no-op result: %#v", result)
+	}
+	if strings.Join(paths, ",") != "/loadUserContent" {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
+func TestAccountBatchMCPRemovePreservesServerAcrossRetry(t *testing.T) {
+	account := &Account{UserID: "user-1", UserEmail: "mcp-remove@example.test", SpaceID: "space-1"}
+	account.EnsureAccountID()
+	pool := NewAccountPool()
+	pool.accounts = []*Account{account}
+	store, err := NewMCPStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := store.Upsert(MCPServerInput{
+		Name:     "Workspace MCP",
+		URL:      "https://mcp.example.test/server",
+		AuthType: MCPAuthNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewAccountBatchManager(pool, t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetMCPStore(store)
+
+	originalRemover := mcpRemover
+	calls := 0
+	mcpRemover = func(gotAccount *Account, gotServer *MCPServerConfig) (MCPRemoveResult, error) {
+		calls++
+		if gotAccount != account || gotServer.ID != server.ID {
+			t.Fatalf("unexpected remover input: account=%#v server=%#v", gotAccount, gotServer)
+		}
+		if calls == 1 {
+			return MCPRemoveResult{ModuleID: "module-1", RemovedCount: 1}, errors.New("transaction failed")
+		}
+		return MCPRemoveResult{ModuleID: "module-1", Removed: true, RemovedCount: 1}, nil
+	}
+	t.Cleanup(func() { mcpRemover = originalRemover })
+
+	job, err := manager.StartMCPRemove(server.ID, []string{account.AccountID}, 1)
+	if err != nil {
+		t.Fatalf("StartMCPRemove: %v", err)
+	}
+	failed := waitForAccountBatchJob(t, manager, job.ID)
+	if failed.MCPServerID != server.ID || failed.Failed != 1 || failed.Steps[0].ModuleID != "module-1" || failed.Steps[0].Removed == nil || *failed.Steps[0].Removed {
+		t.Fatalf("unexpected failed remove job: %#v", failed)
+	}
+
+	retry, err := manager.Retry(failed.ID)
+	if err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	finished := waitForAccountBatchJob(t, manager, retry.ID)
+	if finished.MCPServerID != server.ID || finished.Succeeded != 1 || finished.Steps[0].ModuleID != "module-1" || finished.Steps[0].Removed == nil || !*finished.Steps[0].Removed {
+		t.Fatalf("unexpected retried remove job: %#v", finished)
+	}
+	if calls != 2 {
+		t.Fatalf("remover calls=%d want 2", calls)
+	}
+}
+
+func mustJSON(t *testing.T, value interface{}) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}

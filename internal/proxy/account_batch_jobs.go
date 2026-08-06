@@ -21,6 +21,7 @@ const (
 	AccountBatchDeleteExhausted = "delete_exhausted"
 	AccountBatchDeleteNoSpace   = "delete_no_workspace"
 	AccountBatchInstallMCP      = "install_mcp"
+	AccountBatchRemoveMCP       = "remove_mcp"
 
 	accountBatchHistoryLimit = 20
 	accountBatchMaxAccounts  = 20000
@@ -36,6 +37,7 @@ type AccountBatchStep struct {
 	Configured *bool  `json:"configured,omitempty"`
 	ModuleID   string `json:"module_id,omitempty"`
 	Connected  *bool  `json:"connected,omitempty"`
+	Removed    *bool  `json:"removed,omitempty"`
 	selector   string
 }
 
@@ -131,6 +133,7 @@ func cloneAccountBatchJob(job *AccountBatchJob) *AccountBatchJob {
 	for i := range clone.Steps {
 		clone.Steps[i].Configured = cloneBoolPtr(job.Steps[i].Configured)
 		clone.Steps[i].Connected = cloneBoolPtr(job.Steps[i].Connected)
+		clone.Steps[i].Removed = cloneBoolPtr(job.Steps[i].Removed)
 	}
 	return &clone
 }
@@ -171,7 +174,7 @@ func normalizeAccountBatchAction(action string) string {
 	switch action {
 	case AccountBatchCheckPersonal, AccountBatchDisable, AccountBatchEnable,
 		AccountBatchDelete, AccountBatchDeleteMissing, AccountBatchDeleteExhausted,
-		AccountBatchDeleteNoSpace, AccountBatchInstallMCP:
+		AccountBatchDeleteNoSpace, AccountBatchInstallMCP, AccountBatchRemoveMCP:
 		return action
 	default:
 		return ""
@@ -227,6 +230,10 @@ func (m *AccountBatchManager) StartMCPInstall(serverID string, selectors []strin
 	return m.start(AccountBatchInstallMCP, selectors, concurrency, strings.TrimSpace(serverID))
 }
 
+func (m *AccountBatchManager) StartMCPRemove(serverID string, selectors []string, concurrency int) (*AccountBatchJob, error) {
+	return m.start(AccountBatchRemoveMCP, selectors, concurrency, strings.TrimSpace(serverID))
+}
+
 func (m *AccountBatchManager) start(action string, selectors []string, concurrency int, mcpServerID string) (*AccountBatchJob, error) {
 	if m == nil || m.pool == nil {
 		return nil, fmt.Errorf("batch manager is not initialized")
@@ -235,7 +242,7 @@ func (m *AccountBatchManager) start(action string, selectors []string, concurren
 	if action == "" {
 		return nil, fmt.Errorf("unsupported batch action")
 	}
-	if action == AccountBatchInstallMCP {
+	if action == AccountBatchInstallMCP || action == AccountBatchRemoveMCP {
 		if strings.TrimSpace(mcpServerID) == "" {
 			return nil, fmt.Errorf("MCP server id is required")
 		}
@@ -334,6 +341,7 @@ type accountBatchExecution struct {
 	configured *bool
 	moduleID   string
 	connected  *bool
+	removed    *bool
 }
 
 func (m *AccountBatchManager) execute(action string, account *Account, mcpServerID string) accountBatchExecution {
@@ -367,6 +375,37 @@ func (m *AccountBatchManager) execute(action string, account *Account, mcpServer
 			message:   "MCP installed and configured for Notion Agent",
 			moduleID:  install.ModuleID,
 			connected: &connected,
+		}
+	case AccountBatchRemoveMCP:
+		m.mu.RLock()
+		store := m.mcpStore
+		m.mu.RUnlock()
+		if store == nil {
+			return accountBatchExecution{status: "failed", message: "MCP store is not initialized"}
+		}
+		server, ok := store.Get(mcpServerID)
+		if !ok {
+			return accountBatchExecution{status: "failed", message: "MCP server not found"}
+		}
+		removal, err := mcpRemover(account, server)
+		removed := removal.Removed
+		if err != nil {
+			return accountBatchExecution{
+				status:   "failed",
+				message:  truncateForLog(err.Error(), 300),
+				moduleID: removal.ModuleID,
+				removed:  &removed,
+			}
+		}
+		message := "MCP was not installed on this workspace"
+		if removal.Removed {
+			message = "MCP removed from Notion Agent"
+		}
+		return accountBatchExecution{
+			status:   "success",
+			message:  message,
+			moduleID: removal.ModuleID,
+			removed:  &removed,
 		}
 	case AccountBatchCheckPersonal:
 		checkedAt := time.Now().UTC()
@@ -534,6 +573,7 @@ func (m *AccountBatchManager) run(id string, targets map[string]*Account) {
 					step.Configured = cloneBoolPtr(result.configured)
 					step.ModuleID = result.moduleID
 					step.Connected = cloneBoolPtr(result.connected)
+					step.Removed = cloneBoolPtr(result.removed)
 					job.Done++
 					switch result.status {
 					case "success":
@@ -621,6 +661,9 @@ func (m *AccountBatchManager) Retry(id string) (*AccountBatchJob, error) {
 	if job.Action == AccountBatchInstallMCP {
 		return m.StartMCPInstall(job.MCPServerID, selectors, job.Concurrency)
 	}
+	if job.Action == AccountBatchRemoveMCP {
+		return m.StartMCPRemove(job.MCPServerID, selectors, job.Concurrency)
+	}
 	return m.Start(job.Action, selectors, job.Concurrency)
 }
 
@@ -660,9 +703,12 @@ func HandleAccountBatchJobs(manager *AccountBatchManager, auth *DashboardAuth) h
 			selectors := append(append(make([]string, 0, len(body.AccountIDs)+len(body.Emails)), body.AccountIDs...), body.Emails...)
 			var job *AccountBatchJob
 			var err error
-			if normalizeAccountBatchAction(body.Action) == AccountBatchInstallMCP {
+			switch normalizeAccountBatchAction(body.Action) {
+			case AccountBatchInstallMCP:
 				job, err = manager.StartMCPInstall(body.MCPServerID, selectors, body.Concurrency)
-			} else {
+			case AccountBatchRemoveMCP:
+				job, err = manager.StartMCPRemove(body.MCPServerID, selectors, body.Concurrency)
+			default:
 				job, err = manager.Start(body.Action, selectors, body.Concurrency)
 			}
 			if err != nil {

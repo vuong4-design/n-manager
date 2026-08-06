@@ -7,7 +7,7 @@ import { AccountMenu } from './components/AccountMenu'
 import { RegisterModal } from './components/RegisterModal'
 import { HistoryDrawer } from './components/HistoryDrawer'
 import { RequestHistoryDrawer } from './components/RequestHistoryDrawer'
-import { MCPInstallModal, MCPManager } from './components/MCPManager'
+import { MCPAccountActionModal, MCPManager } from './components/MCPManager'
 import { IconUserPlus, IconHistory, IconDatabase, IconDownload, IconUpload } from './components/Icons'
 import { LanguageToggle } from './components/LanguageToggle'
 import { ThemeToggle } from './components/ThemeToggle'
@@ -1192,6 +1192,7 @@ const accountBatchActionKeys: Record<AccountBatchJobAction, string> = {
   delete_exhausted: 'batch.delete_exhausted',
   delete_no_workspace: 'batch.delete_no_workspace',
   install_mcp: 'batch.install_mcp',
+  remove_mcp: 'batch.remove_mcp',
 }
 
 const accountStatusFilterOptions: Array<{ value: AccountStatusFilter; labelKey: string }> = [
@@ -1695,7 +1696,7 @@ export default function App() {
   const [copiedField, setCopiedField] = useState<'key' | 'base' | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showCleanupModal, setShowCleanupModal] = useState(false)
-  const [showMCPInstallModal, setShowMCPInstallModal] = useState(false)
+  const [mcpAccountAction, setMCPAccountAction] = useState<'install' | 'remove' | null>(null)
   const [mcpServers, setMCPServers] = useState<MCPServer[]>([])
   const [mcpLoading, setMCPLoading] = useState(false)
   const [activePage, setActivePage] = useState<DashboardPage>(dashboardPageFromHash)
@@ -2046,13 +2047,15 @@ export default function App() {
     await launchAccountBatch(action, accountIds, legacyEmails)
   }
 
-  const handleInstallSelectedMCP = async (mcpServerID: string) => {
+  const handleSelectedMCPAction = async (mcpServerID: string) => {
+    if (!mcpAccountAction) return
     const entries = Array.from(selectedAccounts.entries())
     const accountIds = entries.flatMap(([selector]) => selector.startsWith('legacy:') ? [] : [selector])
     const legacyEmails = entries.flatMap(([selector, email]) => selector.startsWith('legacy:') && email ? [email] : [])
     if (!mcpServerID || (accountIds.length === 0 && legacyEmails.length === 0)) return
-    const started = await launchAccountBatch('install_mcp', accountIds, legacyEmails, mcpServerID)
-    if (started) setShowMCPInstallModal(false)
+    const action: AccountBatchJobAction = mcpAccountAction === 'remove' ? 'remove_mcp' : 'install_mcp'
+    const started = await launchAccountBatch(action, accountIds, legacyEmails, mcpServerID)
+    if (started) setMCPAccountAction(null)
   }
 
   const handleSelectAllResults = async () => {
@@ -2921,12 +2924,20 @@ export default function App() {
               {batchStartingAction === 'check_personal_instructions' ? t('actions.starting') : t('common.check_selected')}
             </button>
             <button
-              onClick={() => setShowMCPInstallModal(true)}
+              onClick={() => setMCPAccountAction('install')}
               disabled={selectedAccounts.size === 0 || batchBusy}
               className="px-3 py-1.5 bg-notion-blue/10 hover:bg-notion-blue/20 text-notion-blue rounded-md text-[12px] cursor-pointer border border-notion-blue/25 disabled:opacity-40 disabled:cursor-not-allowed"
               title={mcpServers.length === 0 ? t('mcp.install_empty') : t('mcp.install_selected_help')}
             >
               {batchStartingAction === 'install_mcp' ? t('actions.starting') : t('mcp.install_selected')}
+            </button>
+            <button
+              onClick={() => setMCPAccountAction('remove')}
+              disabled={selectedAccounts.size === 0 || batchBusy}
+              className="px-3 py-1.5 bg-err/[.06] hover:bg-err/10 text-err rounded-md text-[12px] cursor-pointer border border-err/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={mcpServers.length === 0 ? t('mcp.remove_empty') : t('mcp.remove_selected_help')}
+            >
+              {batchStartingAction === 'remove_mcp' ? t('actions.starting') : t('mcp.remove_selected')}
             </button>
             <button
               onClick={() => handleBulkSelected('disable')}
@@ -3042,13 +3053,14 @@ export default function App() {
         />
       )}
 
-      {showMCPInstallModal && (
-        <MCPInstallModal
+      {mcpAccountAction && (
+        <MCPAccountActionModal
+          mode={mcpAccountAction}
           servers={mcpServers}
           selectedCount={selectedAccounts.size}
-          busy={batchStartingAction === 'install_mcp' || activeBatchJob?.state === 'running'}
-          onClose={() => setShowMCPInstallModal(false)}
-          onInstall={handleInstallSelectedMCP}
+          busy={batchStartingAction === (mcpAccountAction === 'remove' ? 'remove_mcp' : 'install_mcp') || activeBatchJob?.state === 'running'}
+          onClose={() => setMCPAccountAction(null)}
+          onSubmit={handleSelectedMCPAction}
         />
       )}
 

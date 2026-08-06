@@ -459,6 +459,7 @@
     "delete_exhausted": "清理已用完试用额度账号",
     "delete_no_workspace": "复核并删除无工作区账号",
     "install_mcp": "批量安装 MCP",
+    "remove_mcp": "从账号移除 MCP",
     "running": "并行处理中",
     "interrupted": "任务中断",
     "completed": "已完成",
@@ -530,7 +531,14 @@
     "install_empty": "没有可用的 MCP 配置，请先前往设置 → MCP 管理添加。",
     "install_action": "开始安装",
     "install_selected": "安装 MCP",
-    "install_selected_help": "将已保存的 MCP 服务安装到所选账号工作区。"
+    "install_selected_help": "将已保存的 MCP 服务安装到所选账号工作区。",
+    "remove_title": "移除 MCP",
+    "remove_help": "选择一个已保存的 MCP，从 {{count}} 个选中的工作区移除。",
+    "remove_warning": "此操作只会从所选 Notion 工作区移除对应 MCP，不会删除“设置 → MCP 管理”中保存的配置和凭据。",
+    "remove_empty": "没有可用的 MCP 配置。请先在“设置 → MCP 管理”中添加。",
+    "remove_action": "开始移除",
+    "remove_selected": "移除 MCP",
+    "remove_selected_help": "从选中的账号工作区移除已安装的 MCP。"
   },
   "common": {
     "cancel": "取消",

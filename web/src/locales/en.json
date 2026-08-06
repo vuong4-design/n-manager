@@ -459,6 +459,7 @@
     "delete_exhausted": "Clean Exhausted Trial Accounts",
     "delete_no_workspace": "Recheck and Delete Accounts Without a Workspace",
     "install_mcp": "Install MCP on Accounts",
+    "remove_mcp": "Remove MCP from Accounts",
     "running": "Processing in Parallel",
     "interrupted": "Interrupted",
     "completed": "Completed",
@@ -530,7 +531,14 @@
     "install_empty": "No MCP definition is available. Add one in Settings → MCP Management first.",
     "install_action": "Start Installation",
     "install_selected": "Install MCP",
-    "install_selected_help": "Install a saved MCP server on the selected account workspaces."
+    "install_selected_help": "Install a saved MCP server on the selected account workspaces.",
+    "remove_title": "Remove MCP",
+    "remove_help": "Choose a saved MCP server to remove from {{count}} selected workspace(s).",
+    "remove_warning": "This removes the matching MCP from the selected Notion workspaces. The saved definition and credentials in Settings → MCP Management are kept.",
+    "remove_empty": "No MCP definition is available. Add one in Settings → MCP Management first.",
+    "remove_action": "Start Removal",
+    "remove_selected": "Remove MCP",
+    "remove_selected_help": "Remove an installed MCP server from the selected account workspaces."
   },
   "common": {
     "cancel": "Cancel",

@@ -478,6 +478,7 @@ export type AccountBatchJobAction =
   | 'delete_exhausted'
   | 'delete_no_workspace'
   | 'install_mcp'
+  | 'remove_mcp'
 
 export interface AccountBatchJobStep {
   account_id?: string
@@ -487,6 +488,7 @@ export interface AccountBatchJobStep {
   configured?: boolean
   module_id?: string
   connected?: boolean
+  removed?: boolean
 }
 
 export interface AccountBatchJob {
