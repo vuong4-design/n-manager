@@ -20,6 +20,7 @@ const (
 	AccountBatchDeleteMissing   = "delete_missing_personal_instructions"
 	AccountBatchDeleteExhausted = "delete_exhausted"
 	AccountBatchDeleteNoSpace   = "delete_no_workspace"
+	AccountBatchInstallMCP      = "install_mcp"
 
 	accountBatchHistoryLimit = 20
 	accountBatchMaxAccounts  = 20000
@@ -33,6 +34,8 @@ type AccountBatchStep struct {
 	Status     string `json:"status"`
 	Message    string `json:"message,omitempty"`
 	Configured *bool  `json:"configured,omitempty"`
+	ModuleID   string `json:"module_id,omitempty"`
+	Connected  *bool  `json:"connected,omitempty"`
 	selector   string
 }
 
@@ -51,6 +54,7 @@ type AccountBatchJob struct {
 	Configured  int                `json:"configured"`
 	Missing     int                `json:"missing"`
 	Message     string             `json:"message,omitempty"`
+	MCPServerID string             `json:"mcp_server_id,omitempty"`
 	Steps       []AccountBatchStep `json:"steps"`
 }
 
@@ -65,6 +69,7 @@ type AccountBatchManager struct {
 	path        string
 	jobs        map[string]*AccountBatchJob
 	order       []string
+	mcpStore    *MCPStore
 }
 
 func NewAccountBatchManager(pool *AccountPool, accountsDir, path string) (*AccountBatchManager, error) {
@@ -125,6 +130,7 @@ func cloneAccountBatchJob(job *AccountBatchJob) *AccountBatchJob {
 	}
 	for i := range clone.Steps {
 		clone.Steps[i].Configured = cloneBoolPtr(job.Steps[i].Configured)
+		clone.Steps[i].Connected = cloneBoolPtr(job.Steps[i].Connected)
 	}
 	return &clone
 }
@@ -165,7 +171,7 @@ func normalizeAccountBatchAction(action string) string {
 	switch action {
 	case AccountBatchCheckPersonal, AccountBatchDisable, AccountBatchEnable,
 		AccountBatchDelete, AccountBatchDeleteMissing, AccountBatchDeleteExhausted,
-		AccountBatchDeleteNoSpace:
+		AccountBatchDeleteNoSpace, AccountBatchInstallMCP:
 		return action
 	default:
 		return ""
@@ -204,13 +210,44 @@ func (m *AccountBatchManager) Active() (*AccountBatchJob, bool) {
 	return job, job != nil
 }
 
+func (m *AccountBatchManager) SetMCPStore(store *MCPStore) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.mcpStore = store
+	m.mu.Unlock()
+}
+
 func (m *AccountBatchManager) Start(action string, selectors []string, concurrency int) (*AccountBatchJob, error) {
+	return m.start(action, selectors, concurrency, "")
+}
+
+func (m *AccountBatchManager) StartMCPInstall(serverID string, selectors []string, concurrency int) (*AccountBatchJob, error) {
+	return m.start(AccountBatchInstallMCP, selectors, concurrency, strings.TrimSpace(serverID))
+}
+
+func (m *AccountBatchManager) start(action string, selectors []string, concurrency int, mcpServerID string) (*AccountBatchJob, error) {
 	if m == nil || m.pool == nil {
 		return nil, fmt.Errorf("batch manager is not initialized")
 	}
 	action = normalizeAccountBatchAction(action)
 	if action == "" {
 		return nil, fmt.Errorf("unsupported batch action")
+	}
+	if action == AccountBatchInstallMCP {
+		if strings.TrimSpace(mcpServerID) == "" {
+			return nil, fmt.Errorf("MCP server id is required")
+		}
+		m.mu.RLock()
+		store := m.mcpStore
+		m.mu.RUnlock()
+		if store == nil {
+			return nil, fmt.Errorf("MCP store is not initialized")
+		}
+		if _, ok := store.Get(mcpServerID); !ok {
+			return nil, fmt.Errorf("MCP server not found")
+		}
 	}
 	selectors = normalizeBulkEmails(selectors)
 	if len(selectors) == 0 {
@@ -267,6 +304,7 @@ func (m *AccountBatchManager) Start(action string, selectors []string, concurren
 		Total:       len(steps),
 		Done:        failed,
 		Failed:      failed,
+		MCPServerID: mcpServerID,
 		Steps:       steps,
 	}
 	m.mu.Lock()
@@ -294,13 +332,42 @@ type accountBatchExecution struct {
 	status     string
 	message    string
 	configured *bool
+	moduleID   string
+	connected  *bool
 }
 
-func (m *AccountBatchManager) execute(action string, account *Account) accountBatchExecution {
+func (m *AccountBatchManager) execute(action string, account *Account, mcpServerID string) accountBatchExecution {
 	if account == nil {
 		return accountBatchExecution{status: "failed", message: "账号不存在"}
 	}
 	switch action {
+	case AccountBatchInstallMCP:
+		m.mu.RLock()
+		store := m.mcpStore
+		m.mu.RUnlock()
+		if store == nil {
+			return accountBatchExecution{status: "failed", message: "MCP store is not initialized"}
+		}
+		server, ok := store.Get(mcpServerID)
+		if !ok {
+			return accountBatchExecution{status: "failed", message: "MCP server not found"}
+		}
+		install, err := mcpInstaller(account, server)
+		connected := install.Connected
+		if err != nil {
+			return accountBatchExecution{
+				status:    "failed",
+				message:   truncateForLog(err.Error(), 300),
+				moduleID:  install.ModuleID,
+				connected: &connected,
+			}
+		}
+		return accountBatchExecution{
+			status:    "success",
+			message:   "MCP installed and configured for Notion Agent",
+			moduleID:  install.ModuleID,
+			connected: &connected,
+		}
 	case AccountBatchCheckPersonal:
 		checkedAt := time.Now().UTC()
 		pageID, err := fetchNotionPersonalInstructionsPageID(account)
@@ -429,6 +496,7 @@ func (m *AccountBatchManager) run(id string, targets map[string]*Account) {
 		return
 	}
 	action := job.Action
+	mcpServerID := job.MCPServerID
 	concurrency := job.Concurrency
 	pending := make([]int, 0, job.Total-job.Done)
 	for index, step := range job.Steps {
@@ -455,7 +523,7 @@ func (m *AccountBatchManager) run(id string, targets map[string]*Account) {
 				selector := job.Steps[index].selector
 				m.mu.Unlock()
 
-				result := m.execute(action, targets[selector])
+				result := m.execute(action, targets[selector], mcpServerID)
 
 				m.mu.Lock()
 				job = m.jobs[id]
@@ -464,6 +532,8 @@ func (m *AccountBatchManager) run(id string, targets map[string]*Account) {
 					step.Status = result.status
 					step.Message = result.message
 					step.Configured = cloneBoolPtr(result.configured)
+					step.ModuleID = result.moduleID
+					step.Connected = cloneBoolPtr(result.connected)
 					job.Done++
 					switch result.status {
 					case "success":
@@ -548,6 +618,9 @@ func (m *AccountBatchManager) Retry(id string) (*AccountBatchJob, error) {
 	if len(selectors) == 0 {
 		return nil, fmt.Errorf("job has no failed accounts")
 	}
+	if job.Action == AccountBatchInstallMCP {
+		return m.StartMCPInstall(job.MCPServerID, selectors, job.Concurrency)
+	}
 	return m.Start(job.Action, selectors, job.Concurrency)
 }
 
@@ -556,6 +629,7 @@ type StartAccountBatchJobRequest struct {
 	AccountIDs  []string `json:"account_ids,omitempty"`
 	Emails      []string `json:"emails,omitempty"`
 	Concurrency int      `json:"concurrency"`
+	MCPServerID string   `json:"mcp_server_id,omitempty"`
 }
 
 func authorizeAccountBatch(auth *DashboardAuth, w http.ResponseWriter, r *http.Request) bool {
@@ -584,7 +658,13 @@ func HandleAccountBatchJobs(manager *AccountBatchManager, auth *DashboardAuth) h
 				return
 			}
 			selectors := append(append(make([]string, 0, len(body.AccountIDs)+len(body.Emails)), body.AccountIDs...), body.Emails...)
-			job, err := manager.Start(body.Action, selectors, body.Concurrency)
+			var job *AccountBatchJob
+			var err error
+			if normalizeAccountBatchAction(body.Action) == AccountBatchInstallMCP {
+				job, err = manager.StartMCPInstall(body.MCPServerID, selectors, body.Concurrency)
+			} else {
+				job, err = manager.Start(body.Action, selectors, body.Concurrency)
+			}
 			if err != nil {
 				if errors.Is(err, ErrAccountBatchJobRunning) {
 					w.WriteHeader(http.StatusConflict)

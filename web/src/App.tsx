@@ -1,12 +1,13 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import type { DashboardData, AccountInfo, AccountSummary, DeploymentVersionStatus, RefreshStatus, TokenStats } from './types'
-import { fetchAllDashboardData, fetchAccountSelection, openProxy, openBestProxy, checkAuth, login, logout, triggerRefresh, fetchSettings, updateSettings, addAccount, fetchTokenStats, startAccountBatchJob, getAccountBatchJob, listAccountBatchJobs, retryAccountBatchJob, downloadBackup, restoreBackup, fetchAPIKey, fetchVersionStatus } from './api'
-import type { SearchSettings, ToolChoicePolicy, AccountStatusFilter, AccountBatchJob, AccountBatchJobAction, AccountImportPersonalInstructionsPolicy } from './api'
+import { fetchAllDashboardData, fetchAccountSelection, openProxy, openBestProxy, checkAuth, login, logout, triggerRefresh, fetchSettings, updateSettings, addAccount, fetchTokenStats, startAccountBatchJob, getAccountBatchJob, listAccountBatchJobs, retryAccountBatchJob, downloadBackup, restoreBackup, fetchAPIKey, fetchVersionStatus, fetchMCPServers } from './api'
+import type { SearchSettings, ToolChoicePolicy, AccountStatusFilter, AccountBatchJob, AccountBatchJobAction, AccountImportPersonalInstructionsPolicy, MCPServer } from './api'
 import { fmt, formatTokens, getQuotaStatusByUsage, getQuotaPct, avatarColor, avatarLetter, formatCheckedAt, formatTimestampMs, providerDisplay } from './utils'
 import { AccountMenu } from './components/AccountMenu'
 import { RegisterModal } from './components/RegisterModal'
 import { HistoryDrawer } from './components/HistoryDrawer'
 import { RequestHistoryDrawer } from './components/RequestHistoryDrawer'
+import { MCPInstallModal, MCPManager } from './components/MCPManager'
 import { IconUserPlus, IconHistory, IconDatabase, IconDownload, IconUpload } from './components/Icons'
 import { LanguageToggle } from './components/LanguageToggle'
 import { ThemeToggle } from './components/ThemeToggle'
@@ -1190,6 +1191,7 @@ const accountBatchActionKeys: Record<AccountBatchJobAction, string> = {
   delete_missing_personal_instructions: 'batch.delete_missing',
   delete_exhausted: 'batch.delete_exhausted',
   delete_no_workspace: 'batch.delete_no_workspace',
+  install_mcp: 'batch.install_mcp',
 }
 
 const accountStatusFilterOptions: Array<{ value: AccountStatusFilter; labelKey: string }> = [
@@ -1693,6 +1695,9 @@ export default function App() {
   const [copiedField, setCopiedField] = useState<'key' | 'base' | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showCleanupModal, setShowCleanupModal] = useState(false)
+  const [showMCPInstallModal, setShowMCPInstallModal] = useState(false)
+  const [mcpServers, setMCPServers] = useState<MCPServer[]>([])
+  const [mcpLoading, setMCPLoading] = useState(false)
   const [activePage, setActivePage] = useState<DashboardPage>(dashboardPageFromHash)
   const appVersion = document.querySelector('meta[name="app-version"]')?.getAttribute('content') || 'dev'
   const copyToClipboard = async (text: string, field: 'key' | 'base') => {
@@ -1713,6 +1718,17 @@ export default function App() {
   const PAGE_SIZE = 20
   const completedBatchJobsRef = useRef<Set<string>>(new Set())
   const loadDataGenerationRef = useRef(0)
+
+  const loadMCPServers = useCallback(async () => {
+    setMCPLoading(true)
+    try {
+      setMCPServers(await fetchMCPServers())
+    } catch {
+      setMCPServers([])
+    } finally {
+      setMCPLoading(false)
+    }
+  }, [])
 
   // Debounced query: typing in the search box shouldn't fire a request
   // on every keystroke; we wait 250ms after the user stops typing and
@@ -1842,6 +1858,11 @@ export default function App() {
       .finally(() => setVersionLoading(false))
   }, [authState, t])
 
+  useEffect(() => {
+    if (authState !== 'authenticated') return
+    void loadMCPServers()
+  }, [authState, loadMCPServers])
+
   // Restore the active account-batch task after a browser refresh. The server
   // keeps the task and its step progress, so closing/reloading the page does
   // not restart the work.
@@ -1967,11 +1988,12 @@ export default function App() {
     action: AccountBatchJobAction,
     accountIds: string[],
     legacyEmails: string[] = [],
+    mcpServerID = '',
   ): Promise<boolean> => {
     if ((accountIds.length === 0 && legacyEmails.length === 0) || batchStartingAction || activeBatchJob?.state === 'running') return false
     setBatchStartingAction(action)
     try {
-      const job = await startAccountBatchJob(action, accountIds, 10, legacyEmails)
+      const job = await startAccountBatchJob(action, accountIds, 10, legacyEmails, mcpServerID)
       setActiveBatchJob(job)
       window.localStorage.setItem('notion-manager-active-account-batch-job', job.id)
       return true
@@ -2022,6 +2044,15 @@ export default function App() {
       if (!confirmed) return
     }
     await launchAccountBatch(action, accountIds, legacyEmails)
+  }
+
+  const handleInstallSelectedMCP = async (mcpServerID: string) => {
+    const entries = Array.from(selectedAccounts.entries())
+    const accountIds = entries.flatMap(([selector]) => selector.startsWith('legacy:') ? [] : [selector])
+    const legacyEmails = entries.flatMap(([selector, email]) => selector.startsWith('legacy:') && email ? [email] : [])
+    if (!mcpServerID || (accountIds.length === 0 && legacyEmails.length === 0)) return
+    const started = await launchAccountBatch('install_mcp', accountIds, legacyEmails, mcpServerID)
+    if (started) setShowMCPInstallModal(false)
   }
 
   const handleSelectAllResults = async () => {
@@ -2634,6 +2665,10 @@ export default function App() {
           </div>
         )}
 
+        {activePage === 'settings' && (
+          <MCPManager servers={mcpServers} loading={mcpLoading} onReload={loadMCPServers} />
+        )}
+
         {/* API Settings */}
         {activePage === 'settings' && settings && (() => {
           const apiBase = `${window.location.origin}/v1`
@@ -2886,6 +2921,14 @@ export default function App() {
               {batchStartingAction === 'check_personal_instructions' ? t('actions.starting') : t('common.check_selected')}
             </button>
             <button
+              onClick={() => setShowMCPInstallModal(true)}
+              disabled={selectedAccounts.size === 0 || batchBusy}
+              className="px-3 py-1.5 bg-notion-blue/10 hover:bg-notion-blue/20 text-notion-blue rounded-md text-[12px] cursor-pointer border border-notion-blue/25 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={mcpServers.length === 0 ? t('mcp.install_empty') : t('mcp.install_selected_help')}
+            >
+              {batchStartingAction === 'install_mcp' ? t('actions.starting') : t('mcp.install_selected')}
+            </button>
+            <button
               onClick={() => handleBulkSelected('disable')}
               disabled={selectedAccounts.size === 0 || batchBusy}
               className="px-3 py-1.5 bg-warn/10 hover:bg-warn/20 text-warn rounded-md text-[12px] cursor-pointer border border-warn/25 disabled:opacity-40 disabled:cursor-not-allowed"
@@ -2996,6 +3039,16 @@ export default function App() {
           busy={batchBusy}
           onClose={() => setShowCleanupModal(false)}
           onRun={handleCleanupTarget}
+        />
+      )}
+
+      {showMCPInstallModal && (
+        <MCPInstallModal
+          servers={mcpServers}
+          selectedCount={selectedAccounts.size}
+          busy={batchStartingAction === 'install_mcp' || activeBatchJob?.state === 'running'}
+          onClose={() => setShowMCPInstallModal(false)}
+          onInstall={handleInstallSelectedMCP}
         />
       )}
 

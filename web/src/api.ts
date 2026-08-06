@@ -477,6 +477,7 @@ export type AccountBatchJobAction =
   | 'delete_missing_personal_instructions'
   | 'delete_exhausted'
   | 'delete_no_workspace'
+  | 'install_mcp'
 
 export interface AccountBatchJobStep {
   account_id?: string
@@ -484,6 +485,8 @@ export interface AccountBatchJobStep {
   status: 'pending' | 'running' | 'success' | 'failed' | 'skipped'
   message?: string
   configured?: boolean
+  module_id?: string
+  connected?: boolean
 }
 
 export interface AccountBatchJob {
@@ -501,6 +504,7 @@ export interface AccountBatchJob {
   configured: number
   missing: number
   message?: string
+  mcp_server_id?: string
   steps: AccountBatchJobStep[]
 }
 
@@ -509,12 +513,13 @@ export async function startAccountBatchJob(
   accountIds: string[],
   concurrency = 10,
   legacyEmails: string[] = [],
+  mcpServerId = '',
 ): Promise<AccountBatchJob> {
   const resp = await fetch('/admin/account-batch-jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     credentials: 'same-origin',
-    body: JSON.stringify({ action, account_ids: accountIds, emails: legacyEmails, concurrency }),
+    body: JSON.stringify({ action, account_ids: accountIds, emails: legacyEmails, concurrency, mcp_server_id: mcpServerId || undefined }),
   })
   const data = await readJson<AccountBatchJob | { error?: string; active_job?: AccountBatchJob }>(resp, '启动批量任务时返回了无效响应')
   if (resp.status === 409 && 'active_job' in data && data.active_job) return data.active_job
@@ -566,6 +571,77 @@ export async function deleteExhaustedTrials(): Promise<DeleteExhaustedTrialsResu
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     return data
   })
+}
+
+// --- MCP Management API ---
+
+export type MCPAuthType = 'none' | 'basic' | 'bearer'
+
+export interface MCPServer {
+  id: string
+  name: string
+  url: string
+  auth_type: MCPAuthType
+  username?: string
+  has_password: boolean
+  has_bearer_token: boolean
+  run_write_tools_automatically: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface MCPServerInput {
+  id?: string
+  name: string
+  url: string
+  auth_type: MCPAuthType
+  username?: string
+  password?: string
+  bearer_token?: string
+  run_write_tools_automatically: boolean
+}
+
+export async function fetchMCPServers(): Promise<MCPServer[]> {
+  const resp = await fetch('/admin/mcp-servers', { credentials: 'same-origin', cache: 'no-store' })
+  const data = await readJson<{ servers?: MCPServer[]; error?: string }>(resp, 'MCP servers unavailable')
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+  return data.servers || []
+}
+
+export async function createMCPServer(input: MCPServerInput): Promise<MCPServer> {
+  const resp = await fetch('/admin/mcp-servers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  })
+  const data = await readJson<MCPServer & { error?: string }>(resp, 'Unable to save MCP server')
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+  return data
+}
+
+export async function updateMCPServer(id: string, input: MCPServerInput): Promise<MCPServer> {
+  const resp = await fetch(`/admin/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(input),
+  })
+  const data = await readJson<MCPServer & { error?: string }>(resp, 'Unable to update MCP server')
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
+  return data
+}
+
+export async function deleteMCPServer(id: string): Promise<void> {
+  const resp = await fetch(`/admin/mcp-servers/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json' },
+    credentials: 'same-origin',
+  })
+  if (!resp.ok) {
+    const data = await readJson<{ error?: string }>(resp, `HTTP ${resp.status}`)
+    throw new Error(data.error || `HTTP ${resp.status}`)
+  }
 }
 
 // --- Settings API ---

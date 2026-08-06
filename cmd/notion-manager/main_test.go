@@ -100,7 +100,7 @@ func TestNewMux_RegistersModelsRoutes(t *testing.T) {
 	requestHistory, _ := proxy.NewRequestHistoryStore("", 100)
 	regDeps := &proxy.RegisterJobsDeps{Pool: pool, AccountsDir: "", Auth: dashAuth}
 	batchManager, _ := proxy.NewAccountBatchManager(pool, "", "")
-	mux := newMux(pool, "", "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager)
+	mux := newMux(pool, "", "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager, nil)
 	handler := apiKeyAuthMiddleware("sk-test", mux)
 
 	for _, path := range []string{"/v1/models", "/models"} {
@@ -128,7 +128,7 @@ func TestNewMux_RegistersOpenAIRoutes(t *testing.T) {
 	requestHistory, _ := proxy.NewRequestHistoryStore("", 100)
 	regDeps := &proxy.RegisterJobsDeps{Pool: pool, AccountsDir: "", Auth: dashAuth}
 	batchManager, _ := proxy.NewAccountBatchManager(pool, "", "")
-	mux := newMux(pool, "", "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager)
+	mux := newMux(pool, "", "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager, nil)
 	handler := apiKeyAuthMiddleware("sk-test", mux)
 
 	tests := []struct {
@@ -166,7 +166,7 @@ func TestNewMux_RegistersBackupRoute(t *testing.T) {
 	accountsDir := t.TempDir()
 	regDeps := &proxy.RegisterJobsDeps{Pool: pool, AccountsDir: accountsDir, Auth: dashAuth}
 	batchManager, _ := proxy.NewAccountBatchManager(pool, accountsDir, "")
-	mux := newMux(pool, accountsDir, "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager)
+	mux := newMux(pool, accountsDir, "config.yaml", "sk-test", dashAuth, usageStats, requestHistory, regDeps, batchManager, nil)
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin/backup", nil))

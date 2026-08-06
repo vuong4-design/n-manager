@@ -239,7 +239,7 @@ func migrateFileToVolume(source, target string) {
 	}
 }
 
-func newMux(pool *proxy.AccountPool, accountsDir string, configPath string, apiKey string, dashAuth *proxy.DashboardAuth, usageStats *proxy.UsageStats, requestHistory *proxy.RequestHistoryStore, regDeps *proxy.RegisterJobsDeps, batchManager *proxy.AccountBatchManager) *http.ServeMux {
+func newMux(pool *proxy.AccountPool, accountsDir string, configPath string, apiKey string, dashAuth *proxy.DashboardAuth, usageStats *proxy.UsageStats, requestHistory *proxy.RequestHistoryStore, regDeps *proxy.RegisterJobsDeps, batchManager *proxy.AccountBatchManager, mcpStore *proxy.MCPStore) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Anthropic + OpenAI-compatible API endpoints
@@ -263,6 +263,8 @@ func newMux(pool *proxy.AccountPool, accountsDir string, configPath string, apiK
 	mux.HandleFunc("/admin/accounts/delete-exhausted-complimentary", proxy.HandleDeleteExhaustedComplimentaryAccounts(pool, accountsDir, dashAuth))
 	mux.HandleFunc("/admin/account-batch-jobs", proxy.HandleAccountBatchJobs(batchManager, dashAuth))
 	mux.HandleFunc("/admin/account-batch-jobs/", proxy.HandleAccountBatchJobRouter(batchManager, dashAuth))
+	mux.HandleFunc("/admin/mcp-servers", proxy.HandleAdminMCPServers(mcpStore, dashAuth))
+	mux.HandleFunc("/admin/mcp-servers/", proxy.HandleAdminMCPServerRouter(mcpStore, dashAuth))
 	mux.HandleFunc("/admin/models", proxy.HandleAdminModels(pool, dashAuth))
 	mux.HandleFunc("/admin/refresh", proxy.HandleAdminRefresh(pool, accountsDir, dashAuth))
 	mux.HandleFunc("/admin/settings", proxy.HandleAdminSettings(configPath, dashAuth))
@@ -401,12 +403,20 @@ func main() {
 		Providers:   registry,
 		Auth:        dashAuth,
 	}
+	mcpStorePath := filepath.Join(accountsDir, ".mcp_servers.json")
+	mcpStore, err := proxy.NewMCPStore(mcpStorePath)
+	if err != nil {
+		log.Printf("[mcp] load %s: %v (starting with empty store)", mcpStorePath, err)
+		mcpStore, _ = proxy.NewMCPStore("")
+	}
+
 	batchJobsPath := filepath.Join(accountsDir, ".account_batch_jobs.json")
 	batchManager, err := proxy.NewAccountBatchManager(pool, accountsDir, batchJobsPath)
 	if err != nil {
 		log.Printf("[account-batch] load %s: %v (starting with empty history)", batchJobsPath, err)
 		batchManager, _ = proxy.NewAccountBatchManager(pool, accountsDir, "")
 	}
+	batchManager.SetMCPStore(mcpStore)
 
 	cors := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -422,7 +432,7 @@ func main() {
 		})
 	}
 
-	mux := newMux(pool, accountsDir, configPath, apiKey, dashAuth, usageStats, requestHistory, regDeps, batchManager)
+	mux := newMux(pool, accountsDir, configPath, apiKey, dashAuth, usageStats, requestHistory, regDeps, batchManager, mcpStore)
 
 	log.Printf("=== notion-manager ===")
 	log.Printf("Listening on :%s", port)
