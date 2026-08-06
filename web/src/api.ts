@@ -336,8 +336,9 @@ export async function fetchVersionStatus(refresh = false): Promise<DeploymentVer
   return data
 }
 
-export function openProxy(accountId: string) {
-  window.open(`/proxy/start?account_id=${encodeURIComponent(accountId)}`, '_blank')
+export function openProxy(accountId: string, proxyPath?: string) {
+  const target = proxyPath || `/proxy/start?account_id=${encodeURIComponent(accountId)}`
+  window.open(target, '_blank')
 }
 
 export function openBestProxy() {

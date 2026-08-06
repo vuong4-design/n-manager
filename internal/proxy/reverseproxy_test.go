@@ -263,7 +263,7 @@ func TestReverseProxyRedirectLimit(t *testing.T) {
 }
 
 func TestConfigPatchRewritesAppMsgstore(t *testing.T) {
-	script := configPatchScript("https://proxy.example", &Account{TokenV2: "token"})
+	script := configPatchScript("https://proxy.example", "", &Account{TokenV2: "token"})
 	for _, domain := range []string{`www\.notion\.so`, `app\.notion\.com`} {
 		if !strings.Contains(script, domain) {
 			t.Fatalf("config patch does not support msgstore domain %q", domain)
@@ -330,5 +330,132 @@ func TestAllowedMsgstoreHosts(t *testing.T) {
 		if got := isAllowedMsgstoreHost(host); got != want {
 			t.Errorf("isAllowedMsgstoreHost(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestProxyAccountPathIsReadableStableAndWorkspaceUnique(t *testing.T) {
+	first := &Account{UserID: "user-1", UserEmail: "Email.Account+one@example.com", SpaceID: "space-1"}
+	second := &Account{UserID: "user-1", UserEmail: "Email.Account+one@example.com", SpaceID: "space-2"}
+	first.EnsureAccountID()
+	second.EnsureAccountID()
+
+	firstPath := proxyAccountPath(first)
+	secondPath := proxyAccountPath(second)
+	if firstPath == secondPath {
+		t.Fatalf("workspace routes collided: %q", firstPath)
+	}
+	if !strings.HasPrefix(firstPath, "/ai/email-account-one-example-com--") {
+		t.Fatalf("route is not readable: %q", firstPath)
+	}
+	if got := proxyAccountPath(first); got != firstPath {
+		t.Fatalf("route is not stable: first=%q second=%q", firstPath, got)
+	}
+}
+
+func TestSplitAccountProxyPathMapsNamespaceToNotionPaths(t *testing.T) {
+	prefix := "/ai/account-example-com--0123456789ab"
+	cases := map[string]string{
+		prefix:                             "/ai",
+		prefix + "/":                       "/ai",
+		prefix + "/api/v3/loadUserContent": "/api/v3/loadUserContent",
+		prefix + "/chat/abc":               "/chat/abc",
+		prefix + "/_msgproxy/msgstore.app.notion.com/primus-v8/": "/_msgproxy/msgstore.app.notion.com/primus-v8/",
+	}
+	for input, want := range cases {
+		gotPrefix, gotPath, ok := splitAccountProxyPath(input)
+		if !ok || gotPrefix != prefix || gotPath != want {
+			t.Fatalf("split(%q)=(%q,%q,%v), want (%q,%q,true)", input, gotPrefix, gotPath, ok, prefix, want)
+		}
+	}
+	if _, _, ok := splitAccountProxyPath("/ai/INVALID!/api"); ok {
+		t.Fatal("invalid route key was accepted")
+	}
+}
+
+func TestConfigPatchNamespacesBrowserTrafficAndCookies(t *testing.T) {
+	prefix := "/ai/account-example-com--0123456789ab"
+	script := configPatchScript("https://proxy.example", prefix, &Account{TokenV2: "token"})
+	for _, want := range []string{
+		prefix,
+		";path=" + prefix + ";SameSite=Lax",
+		"v.domainBaseUrl=o",
+		"history[k]=function",
+		"p+'/_msgproxy/$1'",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("namespaced config patch missing %q", want)
+		}
+	}
+}
+
+func TestPublicProxyAssetPathsDoNotRequireAccountCookie(t *testing.T) {
+	for _, path := range []string{"/_assets/app.js", "/front-static/app.css", "/images/logo.png", "/fonts/ui.woff2"} {
+		if !isPublicProxyAssetPath(path) {
+			t.Fatalf("public asset path rejected: %q", path)
+		}
+	}
+	for _, path := range []string{"/api/v3/loadUserContent", "/chat/thread", "/ai"} {
+		if isPublicProxyAssetPath(path) {
+			t.Fatalf("account route classified as public asset: %q", path)
+		}
+	}
+}
+
+func TestRewriteProxyLocationHeaderKeepsAccountNamespace(t *testing.T) {
+	prefix := "/ai/account-example-com--0123456789ab"
+	request := httptest.NewRequest(http.MethodGet, prefix+"/api/v3/test", nil)
+	request = withProxyRoutePrefix(request, prefix, "/api/v3/test")
+
+	for input, want := range map[string]string{
+		"/chat/thread":                           prefix + "/chat/thread",
+		"https://app.notion.com/api/v3/next?x=1": prefix + "/api/v3/next?x=1",
+		"https://app.notion.com/_assets/app.js":  "/_assets/app.js",
+		prefix + "/chat/already":                 prefix + "/chat/already",
+		"https://external.example/path":          "https://external.example/path",
+	} {
+		recorder := httptest.NewRecorder()
+		recorder.Header().Set("Location", input)
+		rewriteProxyLocationHeader(recorder, request)
+		if got := recorder.Header().Get("Location"); got != want {
+			t.Fatalf("location %q rewritten to %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestGetSessionSelectsCookieMatchingAccountRoute(t *testing.T) {
+	first := &Account{UserID: "user-1", UserEmail: "first@example.com", SpaceID: "space-1"}
+	second := &Account{UserID: "user-2", UserEmail: "second@example.com", SpaceID: "space-2"}
+	first.EnsureAccountID()
+	second.EnsureAccountID()
+
+	rp := NewReverseProxy(NewAccountPool())
+	rp.sessions.Store("legacy-root", newProxySession(first))
+	rp.sessions.Store("account-path", newProxySession(second))
+	prefix := proxyAccountPath(second)
+	request := httptest.NewRequest(http.MethodGet, prefix+"/api/v3/test", nil)
+	request.Header.Set("Cookie", "np_session=legacy-root; np_session=account-path")
+	request = withProxyRoutePrefix(request, prefix, "/api/v3/test")
+
+	got := rp.getSession(request)
+	if got == nil || got.Account != second {
+		t.Fatalf("selected session=%#v, want second account", got)
+	}
+}
+
+func TestGetSessionRejectsWrongAccountCookieForNamespace(t *testing.T) {
+	first := &Account{UserID: "user-1", UserEmail: "first@example.com", SpaceID: "space-1"}
+	second := &Account{UserID: "user-2", UserEmail: "second@example.com", SpaceID: "space-2"}
+	first.EnsureAccountID()
+	second.EnsureAccountID()
+
+	rp := NewReverseProxy(NewAccountPool())
+	rp.sessions.Store("wrong", newProxySession(first))
+	prefix := proxyAccountPath(second)
+	request := httptest.NewRequest(http.MethodGet, prefix+"/api/v3/test", nil)
+	request.AddCookie(&http.Cookie{Name: "np_session", Value: "wrong"})
+	request = withProxyRoutePrefix(request, prefix, "/api/v3/test")
+
+	if got := rp.getSession(request); got != nil {
+		t.Fatalf("cross-account session accepted: %#v", got)
 	}
 }

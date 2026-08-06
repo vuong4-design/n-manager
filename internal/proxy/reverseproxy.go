@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -33,6 +34,111 @@ var reAnalyticsScript = regexp.MustCompile(`(?s)<(?:script|noscript)[^>]*>.*?(?:
 
 var reAllowedMsgstoreHost = regexp.MustCompile(`(?i)^msgstore(?:-[a-z0-9-]+)?\.(?:www\.notion\.so|app\.notion\.com)$`)
 
+var proxyRouteKeyPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,94}[a-z0-9])?$`)
+
+func proxyAccountRouteKey(acc *Account) string {
+	if acc == nil {
+		return ""
+	}
+	acc.EnsureAccountID()
+	identity := strings.ToLower(strings.TrimSpace(acc.UserEmail))
+	if identity == "" {
+		identity = strings.ToLower(strings.TrimSpace(acc.UserName))
+	}
+	if identity == "" {
+		identity = "account"
+	}
+	var slug strings.Builder
+	lastDash := false
+	for _, r := range identity {
+		isAlphaNum := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if isAlphaNum {
+			slug.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && slug.Len() > 0 {
+			slug.WriteByte('-')
+			lastDash = true
+		}
+	}
+	base := strings.Trim(slug.String(), "-")
+	if base == "" {
+		base = "account"
+	}
+	if len(base) > 48 {
+		base = strings.Trim(base[:48], "-")
+	}
+	suffix := strings.ToLower(strings.TrimSpace(acc.AccountID))
+	if len(suffix) > 12 {
+		suffix = suffix[:12]
+	}
+	if suffix == "" {
+		return base
+	}
+	return base + "--" + suffix
+}
+
+func proxyAccountPath(acc *Account) string {
+	key := proxyAccountRouteKey(acc)
+	if key == "" {
+		return "/ai"
+	}
+	return "/ai/" + key
+}
+
+func splitAccountProxyPath(path string) (prefix, upstreamPath string, ok bool) {
+	if !strings.HasPrefix(path, "/ai/") {
+		return "", path, false
+	}
+	rest := strings.TrimPrefix(path, "/ai/")
+	key := rest
+	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		key = rest[:slash]
+		upstreamPath = rest[slash:]
+	} else {
+		upstreamPath = "/ai"
+	}
+	if !proxyRouteKeyPattern.MatchString(key) {
+		return "", path, false
+	}
+	if upstreamPath == "" || upstreamPath == "/" {
+		upstreamPath = "/ai"
+	}
+	return "/ai/" + key, upstreamPath, true
+}
+
+type proxyRoutePrefixContextKey struct{}
+
+func withProxyRoutePrefix(r *http.Request, prefix, upstreamPath string) *http.Request {
+	clone := r.Clone(context.WithValue(r.Context(), proxyRoutePrefixContextKey{}, prefix))
+	clonedURL := *r.URL
+	clonedURL.Path = upstreamPath
+	clonedURL.RawPath = ""
+	clone.URL = &clonedURL
+	return clone
+}
+
+func proxyRoutePrefix(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	prefix, _ := r.Context().Value(proxyRoutePrefixContextKey{}).(string)
+	return prefix
+}
+
+func (rp *ReverseProxy) accountForRoutePrefix(prefix string) *Account {
+	if rp == nil || rp.pool == nil || prefix == "" {
+		return nil
+	}
+	for _, acc := range rp.pool.AccountsSnapshot() {
+		if proxyAccountPath(acc) == prefix && !rp.pool.isUnusable(acc) && !rp.pool.HasNoWorkspace(acc) {
+			return acc
+		}
+	}
+	return nil
+}
+
 // ProxySession maps a proxy session cookie to a pooled account
 type ProxySession struct {
 	Account   *Account
@@ -43,14 +149,20 @@ type ProxySession struct {
 // ReverseProxy proxies requests to notion.so with session/cookie injection
 type ReverseProxy struct {
 	pool         *AccountPool
-	sessions     sync.Map // sessionID → *ProxySession
+	auth         *DashboardAuth
+	sessions     sync.Map // sessionID -> *ProxySession
 	msgTransport http.RoundTripper
 }
 
 // NewReverseProxy creates a reverse proxy backed by the given account pool
-func NewReverseProxy(pool *AccountPool) *ReverseProxy {
+func NewReverseProxy(pool *AccountPool, auth ...*DashboardAuth) *ReverseProxy {
+	var dashboardAuth *DashboardAuth
+	if len(auth) > 0 {
+		dashboardAuth = auth[0]
+	}
 	return &ReverseProxy{
 		pool: pool,
+		auth: dashboardAuth,
 		// Engine.IO requires sticky sessions: AWS ALB uses AWSALBAPP-0 cookie.
 		// Each ProxySession's CookieJar stores those cookies independently while
 		// this transport remains shared for connection reuse.
@@ -235,13 +347,68 @@ func isAllowedNotionRedirectHost(host string) bool {
 	return strings.EqualFold(host, "www.notion.so") || strings.EqualFold(host, "app.notion.com")
 }
 
+func isPublicProxyAssetPath(path string) bool {
+	if strings.HasPrefix(path, "/_assets/") || strings.HasPrefix(path, "/images/") ||
+		strings.HasPrefix(path, "/front-static/") || strings.HasPrefix(path, "/static/") ||
+		path == "/sw.js" || path == "/favicon.ico" || path == "/manifest.webmanifest" {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".js", ".css", ".map", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf":
+		return true
+	default:
+		return false
+	}
+}
+
+func rewriteProxyLocationHeader(w http.ResponseWriter, r *http.Request) {
+	prefix := proxyRoutePrefix(r)
+	if prefix == "" {
+		return
+	}
+	location := strings.TrimSpace(w.Header().Get("Location"))
+	if location == "" {
+		return
+	}
+	target, err := url.Parse(location)
+	if err != nil {
+		return
+	}
+	if target.IsAbs() && !isAllowedNotionRedirectHost(target.Hostname()) && !isAllowedMsgstoreHost(target.Hostname()) {
+		return
+	}
+	path := target.Path
+	if path == "" {
+		path = "/"
+	}
+	if !isPublicProxyAssetPath(path) && path != prefix && !strings.HasPrefix(path, prefix+"/") {
+		path = prefix + "/" + strings.TrimPrefix(path, "/")
+	}
+	target.Scheme = ""
+	target.Host = ""
+	target.Path = path
+	target.RawPath = ""
+	w.Header().Set("Location", target.String())
+}
+
 // getSession retrieves an existing session for the request.
-// Sessions are created exclusively via /proxy/start (dashboard account selection).
+// Sessions are normally created via /proxy/start. A bookmarked account path
+// may recreate its path-scoped session when the dashboard session is valid.
 // Returns nil if no valid session exists — caller should redirect to /dashboard/.
 func (rp *ReverseProxy) getSession(r *http.Request) *ProxySession {
-	if c, err := r.Cookie("np_session"); err == nil {
-		if s, ok := rp.sessions.Load(c.Value); ok {
-			return s.(*ProxySession)
+	prefix := proxyRoutePrefix(r)
+	for _, cookie := range r.Cookies() {
+		if cookie.Name != "np_session" {
+			continue
+		}
+		value, ok := rp.sessions.Load(cookie.Value)
+		if !ok {
+			continue
+		}
+		sess := value.(*ProxySession)
+		if prefix == "" || proxyAccountPath(sess.Account) == prefix {
+			return sess
 		}
 	}
 	return nil
@@ -251,65 +418,50 @@ func (rp *ReverseProxy) getSession(r *http.Request) *ProxySession {
 // 1. Sets all notion cookies via document.cookie (before SPA reads them)
 // 2. Intercepts window.CONFIG assignment to patch URLs
 // 3. Unregisters Service Workers
-func configPatchScript(origin string, acc *Account) string {
-	// Build cookie-setting JS from full_cookie string
+func configPatchScript(origin, routePrefix string, acc *Account) string {
+	cookiePath := "/"
+	if routePrefix != "" {
+		cookiePath = routePrefix
+	}
 	cookieJS := ""
 	for _, part := range strings.Split(accountCookieHeader(acc), ";") {
 		part = strings.TrimSpace(part)
 		if part != "" {
-			cookieJS += fmt.Sprintf(`document.cookie=%q+";path=/";`, part)
+			cookieJS += fmt.Sprintf(`document.cookie=%q+%q;`, part, ";path="+cookiePath+";SameSite=Lax")
 		}
 	}
 
 	return fmt.Sprintf(`<script>(function(){`+
-		// Step 1: Set cookies before any SPA code reads them
 		`%s`+
-		// Step 2: CONFIG interceptor
-		`var o=%q,_c;`+
-		`Object.defineProperty(window,'CONFIG',{`+
-		`get:function(){return _c},`+
-		`set:function(v){_c=v;if(v&&typeof v==='object'){`+
-		`v.domainBaseUrl=o;`+
-		`if(v.messageStore)v.messageStore.url=o+'/msgstore';`+
-		`if(v.audioProcessor)v.audioProcessor.url=o+'/audioprocessor';`+
-		`v.isLocalhost=false;v.isLocalDevelopment=true`+
-		`}},configurable:true,enumerable:true});`+
-		// Step 3: Unregister Service Workers
-		`if(navigator.serviceWorker)navigator.serviceWorker.getRegistrations()`+
-		`.then(function(r){r.forEach(function(x){x.unregister()})});`+
-		// Step 4: Intercept fetch/XHR/WebSocket for msgstore URLs
+		`var b=%q,p=%q,o=b+p,_c;`+
+		`function pub(x){return x==='/sw.js'||x==='/favicon.ico'||x==='/manifest.webmanifest'||x.indexOf('/_assets/')===0||x.indexOf('/images/')===0||x.indexOf('/front-static/')===0||x.indexOf('/static/')===0||x.indexOf('/dashboard')===0||x.indexOf('/proxy/')===0||/\.(?:js|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf)$/.test(x)}`+
+		`function ns(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.origin!==b||pub(x.pathname)||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}`+
+		`function nws(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.host!==location.host||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}`+
+		`Object.defineProperty(window,'CONFIG',{get:function(){return _c},set:function(v){_c=v;if(v&&typeof v==='object'){v.domainBaseUrl=o;if(v.messageStore)v.messageStore.url=o+'/msgstore';if(v.audioProcessor)v.audioProcessor.url=o+'/audioprocessor';v.isLocalhost=false;v.isLocalDevelopment=true}},configurable:true,enumerable:true});`+
+		`if(navigator.serviceWorker)navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(x){x.unregister()})});`+
 		`var re=/https?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;`+
 		`var wre=/wss?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;`+
-		`var _bk=/googletagmanager\.com|customer\.io|app\.notion\.com\/exp|splunkcloud\.com|amplitude\.com/;`+
-		`var _f=window.fetch;`+
-		`window.fetch=function(u,i){`+
-		`if(typeof u==='string'){`+
-		`if(_bk.test(u))return Promise.resolve(new Response('',{status:200}));`+
-		`u=u.replace(re,o+'/_msgproxy/$1')}`+
-		`return _f.call(this,u,i)};`+
-		`var _xo=XMLHttpRequest.prototype.open;`+
-		`XMLHttpRequest.prototype.open=function(m,u){`+
-		`if(typeof u==='string'){var a=[].slice.call(arguments);`+
-		`a[1]=u.replace(re,o+'/_msgproxy/$1');`+
-		`return _xo.apply(this,a)}return _xo.apply(this,arguments)};`+
-		`var _W=window.WebSocket;`+
-		`window.WebSocket=function(u,p){`+
-		`if(typeof u==='string')u=u.replace(wre,`+
-		`(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/_msgproxy/$1');`+
-		`return p!==undefined?new _W(u,p):new _W(u)};`+
-		`window.WebSocket.prototype=_W.prototype;`+
-		`Object.keys(_W).forEach(function(k){window.WebSocket[k]=_W[k]});`+
-		`})();</script>`, cookieJS, origin)
+		`var bk=/googletagmanager\.com|customer\.io|app\.notion\.com\/exp|splunkcloud\.com|amplitude\.com/;`+
+		`var f=window.fetch;window.fetch=function(u,i){if(typeof u==='string'){if(bk.test(u))return Promise.resolve(new Response('',{status:200}));u=u.replace(re,o+'/_msgproxy/$1');u=ns(u)}else if(u&&u.url){u=new Request(ns(u.url),u)}return f.call(this,u,i)};`+
+		`var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){var a=[].slice.call(arguments);if(typeof u==='string')a[1]=ns(u.replace(re,o+'/_msgproxy/$1'));return xo.apply(this,a)};`+
+		`var W=window.WebSocket;window.WebSocket=function(u,q){if(typeof u==='string'){u=u.replace(wre,(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+p+'/_msgproxy/$1');u=nws(u)}return q!==undefined?new W(u,q):new W(u)};window.WebSocket.prototype=W.prototype;Object.keys(W).forEach(function(k){window.WebSocket[k]=W[k]});`+
+		`['pushState','replaceState'].forEach(function(k){var h=history[k];history[k]=function(s,t,u){return h.call(this,s,t,typeof u==='string'?ns(u):u)}});`+
+		`document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(a&&!a.hasAttribute('download')){var n=ns(a.href);if(n!==a.href)a.href=n}},true);`+
+		`var wo=window.open;window.open=function(u){var a=[].slice.call(arguments);if(typeof u==='string')a[0]=ns(u);return wo.apply(this,a)};`+
+		`})();</script>`, cookieJS, origin, routePrefix)
 }
 
 func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	originalPath := r.URL.Path
+	routePrefix, upstreamPath, namespaced := splitAccountProxyPath(originalPath)
+	if namespaced {
+		r = withProxyRoutePrefix(r, routePrefix, upstreamPath)
+	}
 	path := r.URL.Path
 
-	// Static assets: no auth needed, passthrough to notion.so CDN
-	if strings.HasPrefix(path, "/_assets/") ||
-		strings.HasPrefix(path, "/images/") ||
-		path == "/sw.js" ||
-		path == "/favicon.ico" {
+	// Static assets carry no account identity and can stay at the root so
+	// every account namespace shares the browser/CDN cache safely.
+	if isPublicProxyAssetPath(path) {
 		rpProxyPassthrough(w, r, notionOrigin)
 		return
 	}
@@ -347,8 +499,15 @@ func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// All other routes need a session (created via /proxy/start from dashboard)
+	// All other routes need a path-scoped proxy session. A bookmarked account
+	// entry can recreate one only while the dashboard session is valid.
 	sess := rp.getSession(r)
+	if sess == nil && namespaced && originalPath == routePrefix &&
+		(rp.auth == nil || !rp.auth.HasAdminPassword() || rp.auth.ValidateSession(r)) {
+		if acc := rp.accountForRoutePrefix(routePrefix); acc != nil {
+			sess = rp.createTargetedSession(w, acc, routePrefix)
+		}
+	}
 	if sess == nil {
 		http.NotFound(w, r)
 		return
@@ -448,7 +607,7 @@ func (rp *ReverseProxy) proxyHTML(w http.ResponseWriter, r *http.Request, sess *
 	// Inject CONFIG interceptor before the very first <script> tag
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/html") || (len(html) > 15 && strings.Contains(strings.ToLower(html[:100]), "<!doctype")) {
-		patch := configPatchScript(origin, sess.Account)
+		patch := configPatchScript(origin, proxyRoutePrefix(r), sess.Account)
 		if idx := strings.Index(html, "<script>"); idx != -1 {
 			html = html[:idx] + patch + html[idx:]
 		} else if idx := strings.Index(html, "</head>"); idx != -1 {
@@ -457,6 +616,7 @@ func (rp *ReverseProxy) proxyHTML(w http.ResponseWriter, r *http.Request, sess *
 	}
 
 	rpCopyHeaders(w, resp, true)
+	rewriteProxyLocationHeader(w, r)
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Security-Policy", "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: 'wasm-unsafe-eval'")
 	w.Header().Del("Content-Length") // body was modified
@@ -505,6 +665,7 @@ func (rp *ReverseProxy) proxyAPI(w http.ResponseWriter, r *http.Request, sess *P
 	defer resp.Body.Close()
 
 	rpCopyHeaders(w, resp, true)
+	rewriteProxyLocationHeader(w, r)
 	w.WriteHeader(resp.StatusCode)
 	rpStreamCopy(w, resp.Body)
 }
@@ -539,6 +700,7 @@ func (rp *ReverseProxy) proxyGeneric(w http.ResponseWriter, r *http.Request, ses
 	defer resp.Body.Close()
 
 	rpCopyHeaders(w, resp, true)
+	rewriteProxyLocationHeader(w, r)
 	w.WriteHeader(resp.StatusCode)
 	rpStreamCopy(w, resp.Body)
 }
@@ -578,6 +740,7 @@ func (rp *ReverseProxy) proxyWithCookies(w http.ResponseWriter, r *http.Request,
 	defer resp.Body.Close()
 
 	rpCopyHeaders(w, resp, false)
+	rewriteProxyLocationHeader(w, r)
 	w.WriteHeader(resp.StatusCode)
 	rpStreamCopy(w, resp.Body)
 }
@@ -795,6 +958,7 @@ func (rp *ReverseProxy) proxyMsgstoreHTTP(w http.ResponseWriter, r *http.Request
 	defer resp.Body.Close()
 
 	rpCopyHeaders(w, resp, false)
+	rewriteProxyLocationHeader(w, r)
 	w.WriteHeader(resp.StatusCode)
 	rpStreamCopy(w, resp.Body)
 }

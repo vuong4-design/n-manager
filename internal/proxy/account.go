@@ -2295,6 +2295,7 @@ func (p *AccountPool) GetAccountDetails() []map[string]interface{} {
 			"plan":            profile.PlanType,
 			"space":           acc.SpaceName,
 			"space_id_short":  acc.ShortSpaceID(),
+			"proxy_path":      proxyAccountPath(acc),
 			"exhausted":       p.isQuotaExhausted(acc),
 			"permanent":       quota.PermanentlyExhausted && !unlimited,
 			"no_workspace":    p.hasNoWorkspace(acc),

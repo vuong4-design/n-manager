@@ -349,3 +349,32 @@ func TestDeleteAndSameTokenReimportStayConsistent(t *testing.T) {
 		t.Fatalf("disk winner missing: %v", err)
 	}
 }
+
+func TestProxyStartUsesIndependentAccountPathCookie(t *testing.T) {
+	pool := NewAccountPool()
+	account := &Account{
+		TokenV2:   "token",
+		UserID:    "user-route",
+		UserEmail: "account.one@example.com",
+		SpaceID:   "space-route",
+		QuotaInfo: &QuotaInfo{IsEligible: true},
+	}
+	pool.AddAccount(account)
+	rp := NewReverseProxy(pool)
+
+	req := httptest.NewRequest(http.MethodGet, "/proxy/start?account_id="+account.AccountID, nil)
+	rec := httptest.NewRecorder()
+	HandleProxyStart(pool, rp, NewDashboardAuth("", "")).ServeHTTP(rec, req)
+
+	wantPath := proxyAccountPath(account)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != wantPath {
+		t.Fatalf("status=%d location=%q want=%q body=%s", rec.Code, rec.Header().Get("Location"), wantPath, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "np_session" || cookies[0].Path != wantPath {
+		t.Fatalf("unexpected proxy cookie: %#v", cookies)
+	}
+	if cookies[0].SameSite != http.SameSiteLaxMode || !cookies[0].HttpOnly {
+		t.Fatalf("proxy cookie flags changed: %#v", cookies[0])
+	}
+}

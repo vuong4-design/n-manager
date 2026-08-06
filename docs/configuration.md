@@ -111,7 +111,8 @@ An invalid `NOTION_PROXY` is logged once at startup and dropped — runtime fall
 | `POST /v1/messages` | Anthropic Messages API | API key |
 | `GET /dashboard/` | Dashboard UI | Dashboard login |
 | `GET /proxy/start` | Create a targeted proxy session | Dashboard login |
-| `GET /ai` | Local Notion Web proxy entry | `np_session` |
+| `GET /ai/<account>` | Account-scoped Notion Web proxy entry; supports multiple accounts in one browser session | Dashboard session to recreate, then path-scoped `np_session` |
+| `GET /ai` | Legacy Notion Web proxy entry | `np_session` |
 | `GET /admin/accounts` | Pool list (supports `q`, `page`, `page_size`) | Dashboard session |
 | `DELETE /admin/accounts/{email}` | Remove account file + pool entry | Dashboard session |
 | `GET /admin/models` | Model mapping + pool-discovered models | Dashboard session |

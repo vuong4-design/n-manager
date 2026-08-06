@@ -34,7 +34,7 @@
 **notion-manager** is a local Notion AI management tool. It extracts live Notion sessions through the bundled Chrome extension (or provisions fresh ones via bulk Microsoft-SSO), builds a multi-account pool, refreshes quota and model state in the background, and exposes four practical entrypoints:
 
 - `Dashboard` at `/dashboard/` — pool view, token usage stats, bulk register
-- `Reverse Proxy` for the full Notion AI web UI at `/ai`
+- `Reverse Proxy` for the full Notion AI web UI with isolated per-account paths at `/ai/<account>`
 - `API gateway` — `POST /v1/messages` (Anthropic), `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/models` (OpenAI), with `GET /models` as an alias
 - `Bulk register` at `POST /admin/register/start` (provider-pluggable)
 
@@ -124,7 +124,7 @@ Or download a pre-built binary from [Releases](https://github.com/SleepingBag945
 ### Reverse proxy for Notion Web
 
 - Create a targeted proxy session through `/proxy/start`
-- Open the full Notion AI experience locally through `/ai`
+- Open multiple Notion AI accounts in one browser session through isolated `/ai/<account>` paths
 - Inject pooled account cookies automatically
 - Proxy HTML, `/api/*`, static assets, `msgstore`, and WebSocket traffic
 - Rewrite Notion frontend base URLs and strip analytics scripts

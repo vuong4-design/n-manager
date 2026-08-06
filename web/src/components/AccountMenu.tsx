@@ -57,7 +57,7 @@ export function AccountMenu({ account, onChanged }: Props) {
 
   const onOpenProxy = (e: React.MouseEvent) => {
     e.stopPropagation()
-    openProxy(account.account_id)
+    openProxy(account.account_id, account.proxy_path)
     setOpen(false)
   }
 

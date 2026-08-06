@@ -909,7 +909,7 @@ function AccountCard({
       alert(t('account.temporary_alert', { reason: account.last_failure_reason || 'temporary_failure' }))
       return
     }
-    openProxy(account.account_id)
+    openProxy(account.account_id, account.proxy_path)
   }
 
   return (

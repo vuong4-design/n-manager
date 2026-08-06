@@ -22,6 +22,8 @@ func TestRequiresAPIKey(t *testing.T) {
 		{path: "/models", want: true},
 		{path: "/health", want: false},
 		{path: "/dashboard/", want: false},
+		{path: "/ai/account-example-com--0123456789ab", want: false},
+		{path: "/ai/account-example-com--0123456789ab/api/v3/loadUserContent", want: false},
 	}
 
 	for _, tc := range tests {

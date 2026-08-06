@@ -5,6 +5,7 @@ export interface Model {
 
 export interface AccountInfo {
   account_id: string
+  proxy_path?: string
   login_id?: string
   email: string
   name: string

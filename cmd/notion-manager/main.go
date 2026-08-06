@@ -295,7 +295,7 @@ func newMux(pool *proxy.AccountPool, accountsDir string, configPath string, apiK
 	})
 
 	// Proxy start: create targeted session for a specific account (requires dashboard auth)
-	rp := proxy.NewReverseProxy(pool)
+	rp := proxy.NewReverseProxy(pool, dashAuth)
 	mux.HandleFunc("/proxy/start", proxy.HandleProxyStart(pool, rp, dashAuth))
 
 	// Catch-all: reverse proxy for paths with valid np_session, 404 for everything else
@@ -446,7 +446,8 @@ func main() {
 	log.Printf("  POST /admin/register              (bulk MS-SSO register, sync)")
 	log.Printf("  POST /admin/register/start        (async job)")
 	log.Printf("  GET  /admin/register/jobs/{id}/events (SSE progress)")
-	log.Printf("  GET  /ai                          (Reverse Proxy -> notion.so)")
+	log.Printf("  GET  /ai/{account}                (Account-scoped Reverse Proxy -> notion.so)")
+	log.Printf("  GET  /ai                          (Legacy Reverse Proxy entry)")
 
 	if err := http.ListenAndServe(":"+port, cors(apiKeyAuthMiddleware(apiKey, mux))); err != nil {
 		log.Fatalf("Server error: %v", err)

@@ -251,15 +251,28 @@ func (p *AccountPool) GetBestAccount() *Account {
 
 // --- Reverse Proxy helpers ---
 
-// CreateTargetedSession creates a proxy session for a specific account
-func (rp *ReverseProxy) CreateTargetedSession(w http.ResponseWriter, acc *Account) {
+func (rp *ReverseProxy) createTargetedSession(w http.ResponseWriter, acc *Account, cookiePath string) *ProxySession {
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
 	id := generateUUIDv4()
 	sess := newProxySession(acc)
 	rp.sessions.Store(id, sess)
 	http.SetCookie(w, &http.Cookie{
-		Name: "np_session", Value: id, Path: "/",
-		HttpOnly: true, MaxAge: 86400,
+		Name: "np_session", Value: id, Path: cookiePath,
+		HttpOnly: true, MaxAge: 86400, SameSite: http.SameSiteLaxMode,
 	})
+	return sess
+}
+
+// CreateTargetedSession creates a proxy session for a specific account. The
+// optional cookie path isolates multiple account tabs on the same local origin.
+func (rp *ReverseProxy) CreateTargetedSession(w http.ResponseWriter, acc *Account, cookiePaths ...string) {
+	cookiePath := "/"
+	if len(cookiePaths) > 0 && cookiePaths[0] != "" {
+		cookiePath = cookiePaths[0]
+	}
+	rp.createTargetedSession(w, acc, cookiePath)
 }
 
 // --- HTTP Handlers ---
@@ -362,7 +375,8 @@ func HandleDashboard(auth *DashboardAuth) http.Handler {
 	return auth.RequireAuth(inner)
 }
 
-// HandleProxyStart creates a session for a specific account and redirects to /ai.
+// HandleProxyStart creates a path-scoped session for a specific account and
+// redirects to its stable /ai/<account> namespace.
 // Requires valid dashboard session.
 func HandleProxyStart(pool *AccountPool, rp *ReverseProxy, auth *DashboardAuth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -414,7 +428,8 @@ func HandleProxyStart(pool *AccountPool, rp *ReverseProxy, auth *DashboardAuth) 
 			return
 		}
 
-		rp.CreateTargetedSession(w, acc)
-		http.Redirect(w, r, "/ai", http.StatusFound)
+		accountPath := proxyAccountPath(acc)
+		rp.CreateTargetedSession(w, acc, accountPath)
+		http.Redirect(w, r, accountPath, http.StatusFound)
 	}
 }

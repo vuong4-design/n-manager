@@ -210,7 +210,7 @@ worker pools.
 
 - Click account card → `GET /proxy/start?email=<email>` (opens in new tab)
 - "Open Best" button → `GET /proxy/start?best=true`
-- Both create a `np_session` cookie and redirect to `/ai` (Notion reverse proxy)
+- Both open an account-specific `/ai/<account>` route with a path-scoped `np_session` cookie (Notion reverse proxy)
 
 ### Dashboard Navigation & Version
 
