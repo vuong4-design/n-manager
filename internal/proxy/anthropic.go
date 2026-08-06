@@ -229,7 +229,7 @@ func renderAnthropicCitationText(rawText string, knownURLs []string, knownDocs [
 // It replaces inline citations [^{{URL}}] with [N] in real-time using
 // a buffered state machine, emits thinking blocks as they arrive,
 // then appends a Sources section.
-func streamWebSearch(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, acc *Account, query string, model string, requestID string, blockIndex *int, hasThinking bool, session *Session) (*UsageInfo, string, error) {
+func streamWebSearch(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, acc *Account, query string, model string, requestID string, blockIndex *int, hasThinking bool, session *Session, reasoningEffort ...string) (*UsageInfo, string, error) {
 	var finalUsage *UsageInfo
 	var thinkingBlocks []ThinkingBlock
 	var streamedText strings.Builder
@@ -243,17 +243,19 @@ func streamWebSearch(ctx context.Context, w http.ResponseWriter, flusher http.Fl
 	messages := []ChatMessage{
 		{Role: "user", Content: query},
 	}
-	callOpts := CallOptions{
-		Context:                 ctx,
-		EnableWebSearch:         true,
-		ThinkingBlocks:          &thinkingBlocks,
-		KnownCitationURLs:       &knownCitationURLs,
-		KnownCitationDocs:       &knownCitationDocs,
-		KnownToolCallURLs:       &knownToolCallURLs,
-		Session:                 session,
-		ForceThreadContinuation: session != nil,
-		RequestID:               requestID,
+	effort := ""
+	if len(reasoningEffort) > 0 {
+		effort = reasoningEffort[0]
 	}
+	callOpts := buildWebSearchCallOptions(requestID, effort)
+	callOpts.Context = ctx
+	callOpts.ThinkingBlocks = &thinkingBlocks
+	callOpts.KnownCitationURLs = &knownCitationURLs
+	callOpts.KnownCitationDocs = &knownCitationDocs
+	callOpts.KnownToolCallURLs = &knownToolCallURLs
+	callOpts.Session = session
+	callOpts.ForceThreadContinuation = session != nil
+
 	if session != nil {
 		// The bridge inference that selected WebSearch is already a completed
 		// server turn. Record it before continuing the same Notion thread; a
@@ -453,6 +455,13 @@ type AnthropicTool struct {
 type AnthropicOutputConfig struct {
 	Format *AnthropicOutputFormat `json:"format,omitempty"`
 	Effort string                 `json:"effort,omitempty"`
+}
+
+func outputConfigReasoningEffort(outputConfig *AnthropicOutputConfig) string {
+	if outputConfig == nil {
+		return ""
+	}
+	return outputConfig.Effort
 }
 
 type AnthropicOutputFormat struct {
@@ -744,6 +753,15 @@ func applyStructuredOutputBridge(messages []ChatMessage, outputConfig *Anthropic
 
 // ========== Handler ==========
 
+func handlePremiumFeatureUnavailable(pool *AccountPool, acc *Account) {
+	if isFreePlan(acc) && !hasPremiumInferenceSignal(acc) {
+		log.Printf("[premium] %s (free plan) premium feature unavailable - disabling permanently", acc.UserEmail)
+		pool.MarkInferenceUnavailable(acc)
+		return
+	}
+	log.Printf("[premium] %s premium feature unavailable, trying next account without disabling it", acc.UserEmail)
+}
+
 // HandleAnthropicMessages returns an HTTP handler for the /v1/messages endpoint (Anthropic Messages API)
 func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -809,6 +827,14 @@ func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 		if len(req.Messages) == 0 {
 			writeAnthropicError(w, requestID, http.StatusBadRequest, "messages is required", "invalid_request_error")
 			return
+		}
+		if req.OutputConfig != nil {
+			reasoningEffort, err := normalizeReasoningEffort(req.OutputConfig.Effort)
+			if err != nil {
+				writeAnthropicError(w, requestID, http.StatusBadRequest, err.Error(), "invalid_request_error")
+				return
+			}
+			req.OutputConfig.Effort = reasoningEffort
 		}
 
 		clientToolChoice := req.ToolChoice
@@ -1327,19 +1353,7 @@ func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 			}
 
 			if reqErr != nil && errors.Is(reqErr, ErrPremiumFeatureUnavailable) {
-				// This event can be model/feature-specific. Only the V1
-				// eligibility endpoint may classify a complimentary trial as
-				// exhausted; never freeze an otherwise healthy account solely
-				// from this inference event.
-				if isFreePlan(acc) {
-					if pool.RefreshAccountQuota(acc, 0) {
-						log.Printf("[premium] %s feature unavailable but V1 quota remains eligible; trying next account", acc.UserEmail)
-					} else {
-						log.Printf("[premium] %s feature unavailable and V1 quota confirms exhausted; trying next account", acc.UserEmail)
-					}
-				} else {
-					log.Printf("[premium] %s feature unavailable on this request; trying next account without quarantining it", acc.UserEmail)
-				}
+				handlePremiumFeatureUnavailable(pool, acc)
 				if requestDiagnostic != nil {
 					requestDiagnostic.SetContextMode("full_replay_account_switch")
 				}
@@ -2254,6 +2268,7 @@ func handleAnthropicStream(ctx context.Context, w http.ResponseWriter, acc *Acco
 		EnableWebSearch:       enableWebSearch,
 		EnableWorkspaceSearch: enableWorkspaceSearch,
 		UseReadOnlyMode:       useReadOnlyMode,
+		ReasoningEffort:       outputConfigReasoningEffort(outputConfig),
 		Attachments:           attachments,
 		KnownCitationURLs:     &knownCitationURLs,
 		KnownCitationDocs:     &knownCitationDocs,
@@ -2364,7 +2379,7 @@ func handleAnthropicStream(ctx context.Context, w http.ResponseWriter, acc *Acco
 
 	if prepared.WebSearchQuery != "" {
 		ensureHeaders()
-		searchUsage, searchText, searchErr := streamWebSearch(ctx, w, flusher, acc, prepared.WebSearchQuery, model, requestID, &blockIndex, hasThinking, session)
+		searchUsage, searchText, searchErr := streamWebSearch(ctx, w, flusher, acc, prepared.WebSearchQuery, model, requestID, &blockIndex, hasThinking, session, outputConfigReasoningEffort(outputConfig))
 		if searchErr != nil {
 			return writeAnthropicStreamError(w, flusher, requestID, searchErr)
 		}
@@ -2443,6 +2458,7 @@ func handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, acc *A
 		EnableWebSearch:       enableWebSearch,
 		EnableWorkspaceSearch: enableWorkspaceSearch,
 		UseReadOnlyMode:       useReadOnlyMode,
+		ReasoningEffort:       outputConfigReasoningEffort(outputConfig),
 		Attachments:           attachments,
 		KnownCitationURLs:     &knownCitationURLs,
 		KnownCitationDocs:     &knownCitationDocs,
@@ -2560,7 +2576,7 @@ func handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, acc *A
 		// Intercept WebSearch tool calls → execute via Notion's native search
 		if prepared.WebSearchQuery != "" {
 			log.Printf("[bridge] WebSearch intercepted — executing via Notion native search: %q", prepared.WebSearchQuery)
-			searchResult, searchUsage, searchErr := executeWebSearch(ctx, acc, prepared.WebSearchQuery, model, requestID, session)
+			searchResult, searchUsage, searchErr := executeWebSearch(ctx, acc, prepared.WebSearchQuery, model, requestID, session, outputConfigReasoningEffort(outputConfig))
 			if searchErr == nil && searchResult != "" {
 				if doneText != "" {
 					doneText = doneText + "\n\n" + searchResult

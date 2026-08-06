@@ -153,8 +153,11 @@ func findIdentityPathLocked(dir, accountID string) (string, error) {
 // from being created beside it.
 func WriteAccountJSON(dir, accountID, label string, data []byte) (string, error) {
 	accountID = strings.ToLower(strings.TrimSpace(accountID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create accounts dir: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", fmt.Errorf("protect accounts dir: %w", err)
 	}
 	unlockDirectory, err := LockDirectory(dir)
 	if err != nil {
@@ -219,6 +222,9 @@ func WriteAccountJSON(dir, accountID, label string, data []byte) (string, error)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return "", fmt.Errorf("replace account file: %w", err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", fmt.Errorf("protect account file: %w", err)
 	}
 	cleanup = false
 	return path, nil

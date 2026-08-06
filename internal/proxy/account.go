@@ -28,10 +28,46 @@ var (
 	routingQuotaFetcher = CheckQuotaV1
 	modelsFetcher       = FetchModels
 	workspaceProbe      = CheckUserWorkspaceProfile
+	accountChmod        = os.Chmod
+	accountReadFile     = os.ReadFile
 )
 
 func lockAccountFilePath(path string) (func(), error) {
 	return accountstore.LockPath(path)
+}
+
+const (
+	accountsDirMode = 0o700
+	accountFileMode = 0o600
+)
+
+func ensurePrivateAccountsDir(dir string) error {
+	if err := os.MkdirAll(dir, accountsDirMode); err != nil {
+		return err
+	}
+	return accountChmod(dir, accountsDirMode)
+}
+
+func readPrivateAccountsDir(dir string) ([]os.DirEntry, error) {
+	if err := accountChmod(dir, accountsDirMode); err != nil {
+		return nil, fmt.Errorf("secure accounts dir permissions: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read accounts dir: %w", err)
+	}
+	return entries, nil
+}
+
+func readPrivateAccountFile(path string) ([]byte, error) {
+	if err := accountChmod(path, accountFileMode); err != nil {
+		return nil, fmt.Errorf("secure account file %s permissions: %w", filepath.Base(path), err)
+	}
+	data, err := accountReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read account file %s: %w", filepath.Base(path), err)
+	}
+	return data, nil
 }
 
 const (
@@ -89,6 +125,16 @@ func NewAccountPool() *AccountPool {
 		quotaApplied:     make(map[*Account]uint64),
 		inFlightByLogin:  make(map[string]int),
 	}
+}
+
+// AccountsSnapshot returns a stable copy of the pool membership. Mutating the
+// returned slice does not change the source pool.
+func (p *AccountPool) AccountsSnapshot() []*Account {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	accounts := make([]*Account, len(p.accounts))
+	copy(accounts, p.accounts)
+	return accounts
 }
 
 // AccountLease reserves one inference slot for a Notion login. Release is
@@ -483,7 +529,7 @@ func (acc *Account) clearQuotaExhausted() {
 }
 
 func (p *AccountPool) LoadFromDir(dir string) error {
-	entries, err := os.ReadDir(dir)
+	entries, err := readPrivateAccountsDir(dir)
 	if err != nil {
 		return fmt.Errorf("read accounts dir: %w", err)
 	}
@@ -495,10 +541,9 @@ func (p *AccountPool) LoadFromDir(dir string) error {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := readPrivateAccountFile(path)
 		if err != nil {
-			log.Printf("[account] skip %s: %v", entry.Name(), err)
-			continue
+			return err
 		}
 		var acc Account
 		if err := json.Unmarshal(data, &acc); err != nil {
@@ -566,7 +611,7 @@ func (p *AccountPool) ReloadFromDir(dir string) {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := readPrivateAccountsDir(dir)
 	if err != nil {
 		log.Printf("[account] reload %s: %v", dir, err)
 		return
@@ -577,8 +622,9 @@ func (p *AccountPool) ReloadFromDir(dir string) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := readPrivateAccountFile(path)
 		if err != nil {
+			log.Printf("[account] reload skip %s: %v", entry.Name(), err)
 			continue
 		}
 		var acc Account
@@ -631,7 +677,7 @@ func LoadAccountByIDFromDir(dir, accountID string) (*Account, error) {
 }
 
 func loadAccountByIDFromDirLocked(dir, accountID string) (*Account, error) {
-	entries, err := os.ReadDir(dir)
+	entries, err := readPrivateAccountsDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read accounts dir: %w", err)
 	}
@@ -640,9 +686,9 @@ func loadAccountByIDFromDirLocked(dir, accountID string) (*Account, error) {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, err := readPrivateAccountFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			continue
+			return nil, err
 		}
 		var acc Account
 		if err := json.Unmarshal(data, &acc); err != nil {
@@ -705,7 +751,7 @@ func (p *AccountPool) ActivateAccountByIDFromDir(dir, accountID string) error {
 }
 
 func (p *AccountPool) LoadSingle(tokenFile string) error {
-	data, err := os.ReadFile(tokenFile)
+	data, err := readPrivateAccountFile(tokenFile)
 	if err != nil {
 		return err
 	}
@@ -963,6 +1009,23 @@ func (p *AccountPool) MarkQuotaExhausted(acc *Account) {
 	log.Printf("[quota] marked %s (%s) as exhausted (recovery via API re-check only)", acc.UserName, acc.UserEmail)
 }
 
+// MarkInferenceUnavailable retains the account and its persisted profile while
+// removing it from routing. Complimentary trials are permanent; paid accounts
+// may recover after a later API-confirmed eligible quota response.
+func (p *AccountPool) MarkInferenceUnavailable(acc *Account) {
+	if acc == nil {
+		return
+	}
+	if isFreePlan(acc) && !hasPremiumInferenceSignal(acc) {
+		acc.markQuotaExhausted(time.Now(), true)
+		log.Printf("[quota] marked %s (%s) as permanently unavailable", acc.UserName, acc.UserEmail)
+		return
+	}
+	if acc.markQuotaExhausted(time.Now(), false) {
+		log.Printf("[quota] marked %s (%s) as temporarily inference-unavailable", acc.UserName, acc.UserEmail)
+	}
+}
+
 // ClearQuotaExhausted removes the exhausted mark (called when API confirms recovery)
 func (p *AccountPool) ClearQuotaExhausted(acc *Account) {
 	acc.clearQuotaExhausted()
@@ -1083,13 +1146,13 @@ func (p *AccountPool) isQuotaExhausted(acc *Account) bool {
 	if quota.PermanentlyExhausted {
 		return true
 	}
+	if quota.ExhaustedAt != nil {
+		return true
+	}
 	if quota.Info != nil {
 		return !quota.Info.IsEligible
 	}
-	if quota.ExhaustedAt == nil {
-		return false
-	}
-	return true
+	return false
 }
 
 // hasNoWorkspace returns true only after a probe has confirmed the
@@ -1174,6 +1237,12 @@ func (p *AccountPool) applyQuotaInfo(acc *Account, info *QuotaInfo) quotaApplyRe
 	res.HasPremium = info.HasPremium
 	res.Unlimited = planIncludesFullNotionAI(acc.PlanType)
 	if info.IsEligible || res.Unlimited {
+		if acc.PermanentlyExhausted {
+			plan := strings.ToLower(strings.TrimSpace(acc.PlanType))
+			if plan == "" || plan == "free" || plan == "personal" {
+				return res
+			}
+		}
 		if acc.QuotaExhaustedAt != nil {
 			res.Recovered = true
 		}
@@ -1933,6 +2002,9 @@ func saveAccountFile(dir string, acc *Account) error {
 	if dir == "" {
 		return fmt.Errorf("saveAccountFile: empty dir")
 	}
+	if err := ensurePrivateAccountsDir(dir); err != nil {
+		return fmt.Errorf("secure accounts dir: %w", err)
+	}
 	acc.EnsureAccountID()
 	accountID := acc.AccountID
 	unlockDirectory, err := accountstore.LockDirectory(dir)
@@ -1940,7 +2012,7 @@ func saveAccountFile(dir string, acc *Account) error {
 		return err
 	}
 	defer unlockDirectory()
-	entries, err := os.ReadDir(dir)
+	entries, err := readPrivateAccountsDir(dir)
 	if err != nil {
 		return fmt.Errorf("read dir: %w", err)
 	}
@@ -1952,9 +2024,9 @@ func saveAccountFile(dir string, acc *Account) error {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := readPrivateAccountFile(path)
 		if err != nil {
-			continue
+			return err
 		}
 		var raw map[string]interface{}
 		if err := json.Unmarshal(data, &raw); err != nil {
@@ -1991,7 +2063,7 @@ func saveAccountFile(dir string, acc *Account) error {
 
 	// Re-read after acquiring the path lock so concurrent writers cannot lose
 	// fields that were committed while this caller was locating the file.
-	latest, err := os.ReadFile(matchPath)
+	latest, err := readPrivateAccountFile(matchPath)
 	if err != nil {
 		return fmt.Errorf("read account file: %w", err)
 	}
@@ -2087,6 +2159,9 @@ func saveAccountFile(dir string, acc *Account) error {
 	}
 	if err := os.Rename(tmp, matchPath); err != nil {
 		return fmt.Errorf("rename: %w", err)
+	}
+	if err := accountChmod(matchPath, accountFileMode); err != nil {
+		return fmt.Errorf("protect account file %s: %w", filepath.Base(matchPath), err)
 	}
 	cleanupTmp = false
 	return nil

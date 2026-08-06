@@ -277,10 +277,18 @@ func isDecimalDigits(value string) bool {
 // StreamCallback is called for each text delta during streaming
 type StreamCallback func(delta string, done bool, usage *UsageInfo)
 
+func buildWebSearchCallOptions(requestID, reasoningEffort string) CallOptions {
+	return CallOptions{
+		EnableWebSearch: true,
+		ReasoningEffort: reasoningEffort,
+		RequestID:       requestID,
+	}
+}
+
 // executeWebSearch runs a web search query via Notion's native search capability.
 // It makes a separate CallInference call with useWebSearch=true and no tool framing,
 // allowing Notion's model to use its built-in search tool (two-turn inference).
-func executeWebSearch(ctx context.Context, acc *Account, query string, model string, requestID string, session *Session) (string, *UsageInfo, error) {
+func executeWebSearch(ctx context.Context, acc *Account, query string, model string, requestID string, session *Session, reasoningEffort ...string) (string, *UsageInfo, error) {
 	var result strings.Builder
 	var finalUsage *UsageInfo
 	var knownCitationURLs []string
@@ -291,16 +299,17 @@ func executeWebSearch(ctx context.Context, acc *Account, query string, model str
 		{Role: "user", Content: query},
 	}
 
-	callOpts := CallOptions{
-		Context:                 ctx,
-		EnableWebSearch:         true,
-		KnownCitationURLs:       &knownCitationURLs,
-		KnownCitationDocs:       &knownCitationDocs,
-		KnownToolCallURLs:       &knownToolCallURLs,
-		Session:                 session,
-		ForceThreadContinuation: session != nil,
-		RequestID:               requestID,
+	effort := ""
+	if len(reasoningEffort) > 0 {
+		effort = reasoningEffort[0]
 	}
+	callOpts := buildWebSearchCallOptions(requestID, effort)
+	callOpts.Context = ctx
+	callOpts.KnownCitationURLs = &knownCitationURLs
+	callOpts.KnownCitationDocs = &knownCitationDocs
+	callOpts.KnownToolCallURLs = &knownToolCallURLs
+	callOpts.Session = session
+	callOpts.ForceThreadContinuation = session != nil
 	if session != nil {
 		advanceConversationServerTurnLocked(session, model)
 	}
@@ -1357,6 +1366,16 @@ func StripAskModeSuffix(model string) (string, bool) {
 	return model, false
 }
 
+func normalizeReasoningEffort(value string) (string, error) {
+	effort := strings.ToLower(strings.TrimSpace(value))
+	switch effort {
+	case "", "none", "minimal", "low", "medium", "high", "max", "xhigh":
+		return effort, nil
+	default:
+		return "", fmt.Errorf("unsupported reasoning effort %q", value)
+	}
+}
+
 // CallInference sends a request to Notion's runInferenceTranscript API
 // and streams the response via callback.
 // A verified conversation session continues the real Notion thread with a
@@ -1368,6 +1387,11 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 		opt = opts[0]
 	}
 	requestID := opt.RequestID
+	reasoningEffort, err := normalizeReasoningEffort(opt.ReasoningEffort)
+	if err != nil {
+		return err
+	}
+	opt.ReasoningEffort = reasoningEffort
 
 	// Per-request "-ask" suffix override. Defensive: most callers strip
 	// this in their own pipeline (anthropic.go does), but we re-check here
@@ -1420,9 +1444,23 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 	enableWebSearch := opt.EnableWebSearch
 	attachments := opt.Attachments
 	session := opt.Session
+	threadBoundAttachments := make([]UploadedAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		if strings.TrimSpace(attachment.SessionID) != "" {
+			threadBoundAttachments = append(threadBoundAttachments, attachment)
+		}
+	}
+	attachmentThreadID, err := uploadedAttachmentThreadID(threadBoundAttachments)
+	if err != nil {
+		return err
+	}
+	createdSource := inferenceCreatedSource(attachmentThreadID != "")
 	var reqBody NotionInferenceRequest
 
 	if session != nil && (session.TurnCount > 0 || opt.ForceThreadContinuation) {
+		if attachmentThreadID != "" && attachmentThreadID != session.ThreadID {
+			return fmt.Errorf("attachment upload thread %q does not match session thread %q", attachmentThreadID, session.ThreadID)
+		}
 		newUserContent := buildPartialContinuationContent(messages)
 		if newUserContent == "" {
 			newUserContent = "Continue from the latest client tool result."
@@ -1442,6 +1480,7 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 				attachments,
 				session,
 				personalInstructionsPageID,
+				opt.ReasoningEffort,
 			),
 			CreateThread:            false,
 			IsPartialTranscript:     true,
@@ -1467,13 +1506,16 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 			threadID = session.ThreadID
 		}
 
-		createThread := true
-		if len(attachments) > 0 && attachments[0].SessionID != "" {
-			threadID = attachments[0].SessionID
-			createThread = false
-			if session != nil {
-				session.ThreadID = threadID
-			}
+		contextPageID := strings.TrimSpace(personalInstructionsPageID)
+		if contextPageID == "" {
+			contextPageID = ensureSessionContextPageID(session)
+		}
+		resolvedThreadID, createThread, err := resolveFirstTurnInferenceThread(session, attachmentThreadID)
+		if err != nil {
+			return err
+		}
+		threadID = resolvedThreadID
+		if !createThread {
 			log.Printf("[upload] using upload thread %s for inference", threadID)
 		}
 
@@ -1495,7 +1537,8 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 				now,
 				useClientSystemPrompt,
 				usePersonalInstructions,
-				personalInstructionsPageID,
+				contextPageID,
+				opt.ReasoningEffort,
 			),
 			CreateThread:            createThread,
 			IsPartialTranscript:     false,
@@ -1518,6 +1561,7 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 		log.Printf("[context] starting Notion thread=%s replay_messages=%d", threadID, len(messages))
 	}
 
+	applyWorkflowRequestProtocol(&reqBody, createdSource)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
@@ -1590,7 +1634,34 @@ func effectiveDisableBuiltinTools(configuredDisable, usePersonalInstructions, ha
 // enableWorkspaceSearch: nil = use AppConfig default, non-nil = per-request override
 // useReadOnlyMode: when true, sets Notion's ASK-mode flag — model answers
 // the prompt but skips page edits. Mirrors the frontend's "Ask" mode toggle.
-func buildConfigValue(notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, hasAttachments bool, isSubsequentTurn bool) map[string]interface{} {
+func inferenceCreatedSource(hasAttachments bool) string {
+	if hasAttachments {
+		return "workflows"
+	}
+	return "ai_module"
+}
+
+func applyWorkflowRequestProtocol(reqBody *NotionInferenceRequest, createdSource string) {
+	reqBody.SetUnreadState = true
+	reqBody.CreatedSource = createdSource
+	reqBody.AsPatchResponse = true
+	reqBody.PatchResponseVersion = 2
+	reqBody.IsUserInAnySalesAssistedSpace = boolPtr(false)
+	reqBody.IsSpaceSalesAssisted = boolPtr(false)
+	reqBody.SupportsCustomAgentNudgeTranscriptStep = boolPtr(true)
+	reqBody.DebugOverrides = DebugOverrides{
+		EmitAgentSearchExtractedResults: true,
+		CachedInferences:                &struct{}{},
+		AnnotationInferences:            &struct{}{},
+		EmitInferences:                  boolPtr(false),
+	}
+}
+
+func buildConfigValue(notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, hasAttachments bool, isSubsequentTurn bool, reasoningEffort ...string) map[string]interface{} {
+	effort := ""
+	if len(reasoningEffort) > 0 {
+		effort = strings.TrimSpace(reasoningEffort[0])
+	}
 	effectiveDisable := disableBuiltinTools
 
 	// Resolve workspace search: per-request override > config default
@@ -1604,21 +1675,66 @@ func buildConfigValue(notionModel string, disableBuiltinTools bool, enableWebSea
 	agentEnabled := !effectiveDisable || wsSearch
 
 	configValue := map[string]interface{}{
-		"type":                       "workflow",
-		"model":                      notionModel,
-		"modelFromUser":              true,
-		"enableAgentAutomations":     agentEnabled,
-		"enableAgentIntegrations":    agentEnabled,
-		"enableCustomAgents":         !effectiveDisable,
-		"enableAgentDiffs":           !effectiveDisable,
-		"enableCsvAttachmentSupport": true,
-		"enableScriptAgent":          !effectiveDisable,
-		"enableCreateAndRunThread":   true,
-		"useWebSearch":               enableWebSearch,
-		"useReadOnlyMode":            useReadOnlyMode,
-		"writerMode":                 false,
-		"isCustomAgent":              false,
-		"isCustomAgentBuilder":       false,
+		"type":                                           "workflow",
+		"enableAgentAutomations":                         agentEnabled,
+		"enableAgentIntegrations":                        agentEnabled,
+		"enableCustomAgents":                             !effectiveDisable,
+		"enableExperimentalIntegrations":                 false,
+		"enableScriptAgent":                              !effectiveDisable,
+		"enableScriptAgentAdvanced":                      false,
+		"enableScriptAgentSearchConnectorsInCustomAgent": false,
+		"enableScriptAgentGoogleDriveInCustomAgent":      false,
+		"enableScriptAgentGoogleDriveOAuthInCustomAgent": false,
+		"enableScriptAgentSlack":                         !effectiveDisable,
+		"enableScriptAgentMcpServers":                    !effectiveDisable,
+		"enableAgentDiffs":                               !effectiveDisable,
+		"enableCsvAttachmentSupport":                     true,
+		"showDatabaseAgentsDiscoverability":              true,
+		"enableAgentThreadTools":                         false,
+		"enableCrdtOperations":                           false,
+		"enableAgentCardCustomization":                   true,
+		"enableSystemPromptAsPage":                       false,
+		"enableUserSessionContext":                       false,
+		"enableLargeToolResultComputerOffload":           false,
+		"enableScriptAgentGtm":                           false,
+		"enablePitCrewTableViewTool":                     false,
+		"enableComputer":                                 !effectiveDisable,
+		"enableCustomAgentCreateGuidanceV2":              true,
+		"enableSoftwareFactoryPage":                      false,
+		"enableAgentGenerateImage":                       !effectiveDisable,
+		"enableQueryCalendar":                            false,
+		"enableQueryMail":                                false,
+		"enableMailExplicitToolCalls":                    true,
+		"enableMailNotificationPreferences":              false,
+		"enableMailAgentMultiProviderSupport":            true,
+		"enableNotionMailDeprecated":                     false,
+		"enableWebResearch":                              false,
+		"useRulePrioritization":                          true,
+		"useWebSearch":                                   enableWebSearch,
+		"isHipaa":                                        false,
+		"internetAccess":                                 false,
+		"manageWorkers":                                  false,
+		"useReadOnlyMode":                                useReadOnlyMode,
+		"writerMode":                                     false,
+		"model":                                          notionModel,
+		"modelFromUser":                                  true,
+		"isCustomAgent":                                  false,
+		"isCustomAgentBuilder":                           false,
+		"isCustomAgentCreate":                            false,
+		"isAgentResearchRequest":                         false,
+		"useCustomAgentDraft":                            false,
+		"enableMarkdownVNext":                            false,
+		"enableAgentSkillsV2":                            false,
+		"updatePageStaleViewGuardEnabled":                false,
+		"enableUpdatePageOrderUpdates":                   true,
+		"enableAgentSupportPropertyReorder":              true,
+		"enableAgentAskSurvey":                           true,
+		"databaseAgentConfigMode":                        false,
+		"isOnboardingAgent":                              false,
+		"isMobile":                                       false,
+	}
+	if effort != "" {
+		configValue["reasoningEffort"] = effort
 	}
 
 	// searchScopes controls what the built-in search tool can access
@@ -1631,7 +1747,10 @@ func buildConfigValue(notionModel string, disableBuiltinTools bool, enableWebSea
 	}
 
 	if isSubsequentTurn {
-		configValue["isThreadStartedByAdmin"] = true
+		configValue["useContextualCoreDocsAutoLoad"] = false
+		configValue["useDocPreviewsForCoreAutoLoad"] = true
+	} else {
+		configValue["availableConnectors"] = []interface{}{}
 	}
 
 	return configValue
@@ -1652,6 +1771,7 @@ func buildContextValue(acc *Account, datetime, personalInstructionsPageID string
 		"spaceViewId":     acc.SpaceViewID,
 		"currentDatetime": datetime,
 		"surface":         "ai_module",
+		"agentAccessory":  "paprika",
 	}
 	if personalInstructionsPageID != "" {
 		value["context_page_id"] = personalInstructionsPageID
@@ -1661,12 +1781,9 @@ func buildContextValue(acc *Account, datetime, personalInstructionsPageID string
 
 // buildFullTranscript builds a complete transcript for the first turn of a conversation.
 // Uses ResearcherTranscriptMsg (with id field) to match Notion's real client format.
-func buildFullTranscript(acc *Account, messages []ChatMessage, notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, attachments []UploadedAttachment, configID, contextID, now string, useClientSystemPrompt bool, usePersonalInstructions bool, personalInstructionsPageID string) []interface{} {
+func buildFullTranscript(acc *Account, messages []ChatMessage, notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, attachments []UploadedAttachment, configID, contextID, now string, useClientSystemPrompt bool, usePersonalInstructions bool, personalInstructionsPageID string, reasoningEffort ...string) []interface{} {
 	hasAttachments := len(attachments) > 0
-	configValue := buildConfigValue(notionModel, disableBuiltinTools, enableWebSearch, enableWorkspaceSearch, useReadOnlyMode, hasAttachments, false)
-	if !usePersonalInstructions {
-		personalInstructionsPageID = ""
-	}
+	configValue := buildConfigValue(notionModel, disableBuiltinTools, enableWebSearch, enableWorkspaceSearch, useReadOnlyMode, hasAttachments, false, reasoningEffort...)
 	contextValue := buildContextValue(acc, now, personalInstructionsPageID)
 
 	if hasAttachments {
@@ -1859,6 +1976,7 @@ func buildPartialTranscript(
 	attachments []UploadedAttachment,
 	session *Session,
 	personalInstructionsPageID string,
+	reasoningEffort ...string,
 ) []interface{} {
 	hasAttachments := len(attachments) > 0
 	configValue := buildConfigValue(
@@ -1869,45 +1987,49 @@ func buildPartialTranscript(
 		useReadOnlyMode,
 		hasAttachments,
 		true,
+		reasoningEffort...,
 	)
-	contextValue := buildContextValue(acc, session.OriginalDatetime, personalInstructionsPageID)
+	contextPageID := strings.TrimSpace(personalInstructionsPageID)
+	if contextPageID == "" {
+		contextPageID = ensureSessionContextPageID(session)
+	} else {
+		session.ContextPageID = contextPageID
+	}
+	contextValue := buildContextValue(acc, session.OriginalDatetime, contextPageID)
+	currentDatetime := time.Now().Format(time.RFC3339Nano)
+	currentContextValue := buildContextValue(acc, currentDatetime, contextPageID)
+	currentContextValue["surface"] = "full_page_chat"
 	if hasAttachments {
 		contextValue["surface"] = "workflows"
+		currentContextValue["surface"] = "workflows"
 	}
 	transcript := []interface{}{
-		ResearcherTranscriptMsg{
-			ID:    session.ConfigID,
-			Type:  "config",
-			Value: configValue,
-		},
-		ResearcherTranscriptMsg{
-			ID:    session.ContextID,
-			Type:  "context",
-			Value: contextValue,
-		},
+		ResearcherTranscriptMsg{ID: session.ConfigID, Type: "config", Value: configValue},
+		ResearcherTranscriptMsg{ID: session.ContextID, Type: "context", Value: contextValue},
+		ResearcherTranscriptMsg{ID: generateUUIDv4(), Type: "context", Value: currentContextValue},
 	}
 	for _, id := range session.UpdatedConfigIDs {
-		transcript = append(transcript, UpdatedConfigMsg{
-			ID:   id,
-			Type: "updated-config",
-		})
+		transcript = append(transcript, UpdatedConfigMsg{ID: id, Type: "updated-config"})
 	}
-	for _, attachment := range attachments {
-		transcript = append(transcript, BuildAttachmentTranscript(&attachment))
+	for i := range attachments {
+		transcript = append(transcript, BuildAttachmentTranscript(&attachments[i]))
 	}
 	transcript = append(transcript, ResearcherTranscriptMsg{
-		ID:        generateUUIDv4(),
-		Type:      "user",
-		Value:     [][]string{{newUserContent}},
-		UserID:    acc.UserID,
-		CreatedAt: time.Now().Format(time.RFC3339Nano),
+		ID: generateUUIDv4(), Type: "user", Value: [][]string{{newUserContent}}, UserID: acc.UserID, CreatedAt: currentDatetime,
 	})
 	return transcript
 }
 
-// fetchNotionPersonalInstructionsPageID loads only the selected account's
-// space_view metadata and returns the default Agent instructions page ID. It
-// deliberately does not load, parse, cache, or log the page contents.
+func ensureSessionContextPageID(session *Session) string {
+	if session == nil {
+		return generateUUIDv4()
+	}
+	if session.ContextPageID == "" {
+		session.ContextPageID = generateUUIDv4()
+	}
+	return session.ContextPageID
+}
+
 func fetchNotionPersonalInstructionsPageID(acc *Account) (string, error) {
 	req, err := http.NewRequest("POST", NotionAPIBase+"/loadUserContent", bytes.NewReader([]byte(`{}`)))
 	if err != nil {
@@ -2948,6 +3070,7 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 	eventTypeCounts := make(map[string]int)
 	emittedThinkingChars := 0
 	sawTerminalEvent := false
+	sawPatchEvent := false
 
 	// Peak input context and accumulated output across distinct inference steps.
 	// Summing step inputs measures total compute, not the context presented to any model call.
@@ -2958,6 +3081,7 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 	patchValueTypes := make(map[string]string)
 	// Counter: "/s/N" → how many value entries added so far
 	patchValueCounts := make(map[string]int)
+	patchNextStepIndex := 0
 	// A patch step that launches an internal search/tool is not terminal when
 	// that step reports usage; a later synthesis step must still answer.
 	patchInternalToolSteps := make(map[string]bool)
@@ -3053,6 +3177,47 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 			cb(cleaned[start:], false, nil)
 		}
 		sentClean = cleaned
+	}
+
+	handlePatchValueEntry := func(statePrefix string, index int, entry AgentValueEntry) {
+		patchValueTypes[fmt.Sprintf("%s/value/%d", statePrefix, index)] = entry.Type
+		if patchValueCounts[statePrefix] <= index {
+			patchValueCounts[statePrefix] = index + 1
+		}
+		switch entry.Type {
+		case "thinking":
+			prev := patchThinkingContent
+			patchThinkingContent += entry.Content
+			if entry.Signature != "" {
+				patchThinkingSignature = entry.Signature
+				lastThinkingSignature = entry.Signature
+			}
+			emitThinking(incrementalSuffix(prev, patchThinkingContent))
+		case "text":
+			if entry.Content != "" {
+				rawText += entry.Content
+				emitDelta(false)
+			}
+		case "tool_use":
+			if entry.Name == "search" || len(extractSearchToolQueryLinesFromEntry(entry)) > 0 {
+				patchInternalToolSteps[statePrefix] = true
+			}
+			if entry.Name != "" && entry.ID != "" && !seenNativeToolUseIDs[entry.ID] {
+				seenNativeToolUseIDs[entry.ID] = true
+				if nativeToolUses != nil {
+					*nativeToolUses = append(*nativeToolUses, entry)
+				}
+			}
+		}
+	}
+
+	hasPendingPatchInternalTool := func() bool {
+		for _, pending := range patchInternalToolSteps {
+			if pending {
+				return true
+			}
+		}
+		return false
 	}
 
 	for scanner.Scan() {
@@ -3312,25 +3477,43 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 				cb("", true, &totalUsage)
 			}
 
+		case "patch-start":
+			sawPatchEvent = true
+			var patchStart struct {
+				Data struct {
+					Steps []json.RawMessage `json:"s"`
+				} `json:"data"`
+			}
+			if json.Unmarshal([]byte(line), &patchStart) == nil {
+				patchNextStepIndex = len(patchStart.Data.Steps)
+			}
+
 		case "patch":
+			sawPatchEvent = true
 			var patch PatchEvent
 			if err := json.Unmarshal([]byte(line), &patch); err != nil {
 				return fmt.Errorf("malformed patch event at line %d: %w", lineCount, err)
 			}
 			for _, op := range patch.V {
-				// Track value entry types when new entries are added
+				if op.O == "a" && op.P == "/s/-" {
+					stepIndex := patchNextStepIndex
+					patchNextStepIndex++
+					var step AgentInferenceEvent
+					if json.Unmarshal(op.V, &step) == nil && step.Type == "agent-inference" {
+						statePrefix := fmt.Sprintf("/s/%d", stepIndex)
+						for idx, entry := range step.Value {
+							handlePatchValueEntry(statePrefix, idx, entry)
+						}
+					}
+				}
+
+				// Track and immediately process value entries added by Patch v2.
 				if op.O == "a" && strings.Contains(op.P, "/value/-") {
 					var entry AgentValueEntry
 					if json.Unmarshal(op.V, &entry) == nil && entry.Type != "" {
 						statePrefix := op.P[:strings.Index(op.P, "/value/")]
 						idx := patchValueCounts[statePrefix]
-						path := fmt.Sprintf("%s/value/%d", statePrefix, idx)
-						patchValueTypes[path] = entry.Type
-						patchValueCounts[statePrefix] = idx + 1
-						if entry.Type == "tool_use" &&
-							(entry.Name == "search" || len(extractSearchToolQueryLinesFromEntry(entry)) > 0) {
-							patchInternalToolSteps[statePrefix] = true
-						}
+						handlePatchValueEntry(statePrefix, idx, entry)
 					}
 				}
 
@@ -3344,16 +3527,18 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 					continue
 				}
 
-				// Handle finishedAt for thinking → flush thinking block
-				if op.O == "a" && strings.Contains(op.P, "/finishedAt") && strings.Contains(op.P, "/value/") {
-					if thinkingBlocks != nil && patchThinkingContent != "" {
-						*thinkingBlocks = append(*thinkingBlocks, ThinkingBlock{
-							Content:   patchThinkingContent,
-							Signature: patchThinkingSignature,
-						})
+				// A finished inference step is terminal unless it launched an internal tool.
+				if op.O == "a" && strings.HasSuffix(op.P, "/finishedAt") {
+					statePrefix := strings.TrimSuffix(op.P, "/finishedAt")
+					sawTerminalEvent = !patchInternalToolSteps[statePrefix]
+					if patchThinkingContent != "" {
+						if thinkingBlocks != nil {
+							*thinkingBlocks = append(*thinkingBlocks, ThinkingBlock{Content: patchThinkingContent, Signature: patchThinkingSignature})
+						}
 						patchThinkingContent = ""
 						patchThinkingSignature = ""
 					}
+					emitDelta(sawTerminalEvent)
 					continue
 				}
 
@@ -3383,7 +3568,9 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 						totalUsage.CompletionTokens += tokens
 						totalUsage.TotalTokens = totalUsage.PromptTokens + totalUsage.CompletionTokens
 						emitDelta(sawTerminalEvent)
-						cb("", true, &totalUsage)
+						if sawTerminalEvent {
+							cb("", true, &totalUsage)
+						}
 					}
 					continue
 				}
@@ -3422,6 +3609,12 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 				}
 			}
 
+		case "patch-sync":
+			sawPatchEvent = true
+			if !hasPendingPatchInternalTool() && (sentClean != "" || thinkingStarted || len(seenNativeToolUseIDs) > 0) {
+				sawTerminalEvent = true
+			}
+
 		case "error":
 			var errEvt struct {
 				Message string `json:"message"`
@@ -3443,10 +3636,13 @@ func parseNDJSONStream(reader io.Reader, requestID string, cb StreamCallback, na
 	}
 
 	if !sawTerminalEvent {
-		if sentClean == "" && !thinkingStarted && len(seenNativeToolUseIDs) == 0 {
+		if sawPatchEvent && !hasPendingPatchInternalTool() && (sentClean != "" || thinkingStarted || len(seenNativeToolUseIDs) > 0) {
+			sawTerminalEvent = true
+		} else if sentClean == "" && !thinkingStarted && len(seenNativeToolUseIDs) == 0 {
 			return fmt.Errorf("%w: upstream closed before a terminal event", ErrEmptyResponse)
+		} else {
+			return fmt.Errorf("notion stream truncated before terminal event: %w", io.ErrUnexpectedEOF)
 		}
-		return fmt.Errorf("notion stream truncated before terminal event: %w", io.ErrUnexpectedEOF)
 	}
 	emitDelta(true)
 	closeThinking()

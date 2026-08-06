@@ -15,6 +15,58 @@ import (
 
 var attachmentUploader = UploadFileToNotion
 
+type attachmentUploadTarget struct {
+	ThreadID     string
+	CreateThread bool
+}
+
+func buildAttachmentUploadPlan(threadID string, attachmentCount int, createThread bool) []attachmentUploadTarget {
+	if attachmentCount <= 0 {
+		return nil
+	}
+	plan := make([]attachmentUploadTarget, attachmentCount)
+	for i := range plan {
+		plan[i] = attachmentUploadTarget{ThreadID: threadID, CreateThread: createThread && i == 0}
+	}
+	return plan
+}
+
+func uploadedAttachmentThreadID(attachments []UploadedAttachment) (string, error) {
+	if len(attachments) == 0 {
+		return "", nil
+	}
+	threadID := strings.TrimSpace(attachments[0].SessionID)
+	if threadID == "" {
+		return "", fmt.Errorf("uploaded attachment is missing its Notion thread ID")
+	}
+	for _, attachment := range attachments[1:] {
+		if strings.TrimSpace(attachment.SessionID) != threadID {
+			return "", fmt.Errorf("uploaded attachments belong to different Notion threads")
+		}
+	}
+	return threadID, nil
+}
+
+func resolveFirstTurnInferenceThread(session *Session, attachmentThreadID string) (string, bool, error) {
+	threadID := ""
+	if session != nil {
+		threadID = session.ThreadID
+	}
+	if threadID == "" {
+		threadID = generateUUIDv4()
+	}
+	if attachmentThreadID == "" {
+		return threadID, true, nil
+	}
+	if session != nil && session.ThreadID != "" && session.ThreadID != attachmentThreadID {
+		return "", false, fmt.Errorf("attachment upload thread %q does not match session thread %q", attachmentThreadID, session.ThreadID)
+	}
+	if session != nil {
+		session.ThreadID = attachmentThreadID
+	}
+	return attachmentThreadID, false, nil
+}
+
 // UploadFileToNotion executes the full 5-step Notion file upload flow:
 //
 //	Step 1: getUploadFileUrlForAssistantChatTranscriptUpload → get presigned S3 URL
@@ -216,9 +268,13 @@ func BuildAttachmentTranscript(uploaded *UploadedAttachment) AttachmentTranscrip
 			AiTraceId:        generateUUIDv4(),
 		}
 	}
+	if meta.Guardrail == nil {
+		meta.Guardrail = &AttachmentGuardrail{AttachmentRisk: "skipped"}
+	}
 
 	return AttachmentTranscriptMsg{
 		Type:        "attachment",
+		ID:          generateUUIDv4(),
 		FileUrl:     uploaded.AttachmentURL,
 		FileName:    uploaded.FileName,
 		ContentType: uploaded.ContentType,

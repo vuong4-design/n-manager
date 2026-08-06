@@ -650,3 +650,11 @@ func isFreePlan(acc *Account) bool {
 		return false
 	}
 }
+
+func hasPremiumInferenceSignal(acc *Account) bool {
+	if acc == nil {
+		return false
+	}
+	quota := acc.quotaSnapshot().Info
+	return quota != nil && (quota.HasPremium || quota.PremiumBalance > 0 || quota.PremiumLimit > 0)
+}

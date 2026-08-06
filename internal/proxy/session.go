@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type Session struct {
 	AccountEmail      string
 	ConfigID          string
 	ContextID         string
+	ContextPageID     string
 	OriginalDatetime  string
 	ModelUsed         string
 	TurnCount         int
@@ -394,6 +396,178 @@ func extractLastUserMessage(messages []ChatMessage) string {
 	return ""
 }
 
+func shouldCountNonSystemMessage(msg ChatMessage) bool {
+	switch msg.Role {
+	case "system":
+		return false
+	case "user":
+		return isMeaningfulUserMessage(msg)
+	case "assistant":
+		return strings.TrimSpace(msg.Content) != "" || len(msg.ToolCalls) > 0
+	case "tool":
+		return strings.TrimSpace(msg.Content) != "" || msg.ToolCallID != "" || msg.Name != ""
+	default:
+		return strings.TrimSpace(msg.Content) != ""
+	}
+}
+
+func countNonSystemMessages(messages []ChatMessage) int {
+	count := 0
+	for _, message := range messages {
+		if shouldCountNonSystemMessage(message) {
+			count++
+		}
+	}
+	return count
+}
+
+func needsFreshThreadRecovery(messages []ChatMessage) bool {
+	hasMeaningfulUser := false
+	hasAssistantOrToolHistory := false
+	for _, message := range messages {
+		if isMeaningfulUserMessage(message) {
+			hasMeaningfulUser = true
+		}
+		if (message.Role == "assistant" || message.Role == "tool") && shouldCountNonSystemMessage(message) {
+			hasAssistantOrToolHistory = true
+		}
+	}
+	return hasMeaningfulUser && hasAssistantOrToolHistory
+}
+
+func buildRecoveryMessages(messages []ChatMessage, skipEntry func(ChatMessage, string) bool) []ChatMessage {
+	if !needsFreshThreadRecovery(messages) {
+		return messages
+	}
+	const maxHistoryChars = 4000
+	const maxEntryChars = 900
+	lastUserIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if isMeaningfulUserMessage(messages[i]) {
+			lastUserIdx = i
+			break
+		}
+	}
+	if lastUserIdx < 0 {
+		return messages
+	}
+	clip := func(value string, limit int) string {
+		if limit <= 0 || len(value) <= limit {
+			return value
+		}
+		return value[:limit] + "..."
+	}
+	var systemParts []string
+	for _, message := range messages {
+		if message.Role == "system" && strings.TrimSpace(message.Content) != "" {
+			systemParts = append(systemParts, strings.TrimSpace(message.Content))
+		}
+	}
+	type historyEntry struct{ label, content string }
+	var reversed []historyEntry
+	usedChars := 0
+	hasPostUserHistory := false
+	for i := lastUserIdx + 1; i < len(messages); i++ {
+		if (messages[i].Role == "assistant" || messages[i].Role == "tool") && shouldCountNonSystemMessage(messages[i]) {
+			hasPostUserHistory = true
+			break
+		}
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if i == lastUserIdx && !hasPostUserHistory {
+			continue
+		}
+		message := messages[i]
+		if message.Role == "system" {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if message.Role == "user" {
+			content = normalizeSessionUserContent(message.Content)
+		}
+		if skipEntry != nil && skipEntry(message, content) {
+			continue
+		}
+		label := ""
+		switch message.Role {
+		case "user":
+			label = "User"
+		case "assistant":
+			label = "Assistant"
+			for _, toolCall := range message.ToolCalls {
+				name := strings.TrimSpace(toolCall.Function.Name)
+				if name == "" {
+					name = "tool"
+				}
+				toolCallText := "Tool call " + name
+				if args := strings.TrimSpace(toolCall.Function.Arguments); args != "" {
+					toolCallText += ": " + args
+				}
+				if content != "" {
+					content += "\n"
+				}
+				content += toolCallText
+			}
+		case "tool":
+			name := message.Name
+			if name == "" {
+				name = "tool"
+			}
+			label = fmt.Sprintf("Tool (%s)", name)
+			if content == "" && message.ToolCallID != "" {
+				content = "Tool result for " + message.ToolCallID
+			}
+		default:
+			continue
+		}
+		if content == "" {
+			continue
+		}
+		content = clip(content, maxEntryChars)
+		entryCost := len(label) + len(content) + 4
+		if usedChars > 0 && usedChars+entryCost > maxHistoryChars {
+			break
+		}
+		usedChars += entryCost
+		reversed = append(reversed, historyEntry{label: label, content: content})
+	}
+	var history strings.Builder
+	for i := len(reversed) - 1; i >= 0; i-- {
+		if history.Len() > 0 {
+			history.WriteString("\n\n")
+		}
+		history.WriteString(reversed[i].label)
+		history.WriteString(": ")
+		history.WriteString(reversed[i].content)
+	}
+	latest := normalizeSessionUserContent(messages[lastUserIdx].Content)
+	var prompt strings.Builder
+	prompt.WriteString("Continue this conversation on a fresh thread.\n")
+	prompt.WriteString("Use the context below and answer the latest user message directly.\n")
+	prompt.WriteString("Do not mention missing context, prior thread state, or recovery.\n")
+	if len(systemParts) > 0 {
+		prompt.WriteString("\n\nSystem instructions:\n")
+		prompt.WriteString(strings.Join(systemParts, "\n\n"))
+	}
+	if history.Len() > 0 {
+		prompt.WriteString("\n\nConversation context:\n")
+		prompt.WriteString(history.String())
+	}
+	prompt.WriteString("\n\nLatest user message:\n")
+	prompt.WriteString(latest)
+	return []ChatMessage{{Role: "user", Content: prompt.String()}}
+}
+
+func buildFreshThreadRecoveryMessages(messages []ChatMessage) []ChatMessage {
+	return buildRecoveryMessages(messages, nil)
+}
+
+func buildToolBridgeRecoveryMessages(messages []ChatMessage) []ChatMessage {
+	return buildRecoveryMessages(messages, func(message ChatMessage, content string) bool {
+		return message.Role == "assistant" && detectToolBridgeNoToolResponse(content)
+	})
+}
+
 // buildPartialContinuationContent serializes only the client messages that
 // arrived after Notion's latest stored assistant turn. Tool results must be
 // included even when the client omits tools on the continuation request or
@@ -563,32 +737,66 @@ func computeStableSessionFingerprint(stableSalt string) string {
 	return hex.EncodeToString(hash.Sum(nil))[:32]
 }
 
+// computeSessionFingerprintForRequest preserves a stable client task identity
+// across turns while isolating different resolved models. Without a stable
+// client salt it falls back to normalized prompt identity.
+func computeSessionFingerprintForRequest(messages []ChatMessage, sessionSalt, resolvedModel string) string {
+	sessionSalt = strings.TrimSpace(sessionSalt)
+	resolvedModel = strings.TrimSpace(resolvedModel)
+	if sessionSalt != "" {
+		return computeStableSessionFingerprint("task:" + sessionSalt + "\nmodel:" + resolvedModel)
+	}
+	hash := sha256.New()
+	hash.Write([]byte("model:" + resolvedModel + "\n"))
+	for _, message := range messages {
+		if message.Role == "system" {
+			hash.Write([]byte(normalizeSessionSystemContent(message.Content)))
+			break
+		}
+	}
+	hash.Write([]byte{'\n'})
+	for _, message := range messages {
+		if isMeaningfulUserMessage(message) {
+			hash.Write([]byte(normalizeSessionUserContent(message.Content)))
+			break
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:32]
+}
+
 func extractConversationSalt(metadata map[string]interface{}) string {
 	if len(metadata) == 0 {
 		return ""
 	}
-	for _, key := range []string{"session_id", "conversation_id"} {
-		if value, ok := metadata[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	if raw, ok := metadata["user_id"]; ok {
+	extract := func(raw interface{}) string {
 		switch value := raw.(type) {
-		case map[string]interface{}:
-			for _, key := range []string{"session_id", "conversation_id"} {
-				if id, ok := value[key].(string); ok && strings.TrimSpace(id) != "" {
-					return strings.TrimSpace(id)
-				}
-			}
 		case string:
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				return ""
+			}
 			var decoded map[string]interface{}
-			if json.Unmarshal([]byte(value), &decoded) == nil {
-				for _, key := range []string{"session_id", "conversation_id"} {
+			if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+				for _, key := range []string{"prompt_cache_key", "session_id", "conversation_id", "user_id"} {
 					if id, ok := decoded[key].(string); ok && strings.TrimSpace(id) != "" {
 						return strings.TrimSpace(id)
 					}
 				}
+				return ""
 			}
+			return trimmed
+		case map[string]interface{}:
+			for _, key := range []string{"prompt_cache_key", "session_id", "conversation_id", "user_id"} {
+				if id, ok := value[key].(string); ok && strings.TrimSpace(id) != "" {
+					return strings.TrimSpace(id)
+				}
+			}
+		}
+		return ""
+	}
+	for _, key := range []string{"prompt_cache_key", "session_id", "conversation_id", "user_id"} {
+		if id := extract(metadata[key]); id != "" {
+			return id
 		}
 	}
 	return ""
