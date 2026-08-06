@@ -372,18 +372,61 @@ func TestSplitAccountProxyPathMapsNamespaceToNotionPaths(t *testing.T) {
 	}
 }
 
-func TestConfigPatchNamespacesBrowserTrafficAndCookies(t *testing.T) {
+func TestConfigPatchPartitionsBrowserIdentityAndTraffic(t *testing.T) {
 	prefix := "/ai/account-example-com--0123456789ab"
-	script := configPatchScript("https://proxy.example", prefix, &Account{TokenV2: "token"})
+	script := configPatchScript("https://proxy.example", prefix, &Account{
+		TokenV2:   "token-two",
+		UserID:    "user-two",
+		BrowserID: "browser-two",
+		DeviceID:  "device-two",
+	})
 	for _, want := range []string{
 		prefix,
-		";path=" + prefix + ";SameSite=Lax",
+		`"token_v2":"token-two"`,
+		`"notion_user_id":"user-two"`,
+		"virtualCookieDescriptor",
+		"isProtectedCookie",
+		"legacyCookieNames",
+		"scopedStorage('localStorage')",
+		"scopedStorage('sessionStorage')",
+		"scope+String(name)",
+		"ScopedBroadcastChannel",
 		"v.domainBaseUrl=o",
 		"history[k]=function",
 		"p+'/_msgproxy/$1'",
+		"x.pathname==='/'||x.pathname==='/ai'",
 	} {
 		if !strings.Contains(script, want) {
-			t.Fatalf("namespaced config patch missing %q", want)
+			t.Fatalf("account-isolation patch missing %q", want)
+		}
+	}
+	if strings.Contains(script, `document.cookie="token_v2=`) || strings.Contains(script, `document.cookie='token_v2=`) {
+		t.Fatal("account token is still written to the shared browser cookie jar")
+	}
+}
+
+func TestAccountBrowserCookieSeedsUseCanonicalAccountIdentity(t *testing.T) {
+	encoded := accountBrowserCookieSeeds(&Account{
+		TokenV2:    "canonical-token",
+		UserID:     "canonical-user",
+		BrowserID:  "canonical-browser",
+		DeviceID:   "canonical-device",
+		FullCookie: "token_v2=stale-token; notion_user_id=stale-user; notion_locale=vi-VN",
+	})
+	for _, want := range []string{
+		`"token_v2":"canonical-token"`,
+		`"notion_user_id":"canonical-user"`,
+		`"notion_browser_id":"canonical-browser"`,
+		`"device_id":"canonical-device"`,
+		`"notion_locale":"vi-VN"`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("cookie seed JSON missing %q: %s", want, encoded)
+		}
+	}
+	for _, stale := range []string{"stale-token", "stale-user"} {
+		if strings.Contains(encoded, stale) {
+			t.Fatalf("cookie seed JSON retained stale identity %q: %s", stale, encoded)
 		}
 	}
 }

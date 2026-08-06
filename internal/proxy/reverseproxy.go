@@ -414,41 +414,73 @@ func (rp *ReverseProxy) getSession(r *http.Request) *ProxySession {
 	return nil
 }
 
-// configPatchScript returns JS that:
-// 1. Sets all notion cookies via document.cookie (before SPA reads them)
-// 2. Intercepts window.CONFIG assignment to patch URLs
-// 3. Unregisters Service Workers
-func configPatchScript(origin, routePrefix string, acc *Account) string {
-	cookiePath := "/"
-	if routePrefix != "" {
-		cookiePath = routePrefix
+// Browser identity isolation helpers. The generated patch executes before the
+// first Notion bundle, virtualizes account cookies, and partitions origin-wide
+// browser storage by the stable account route.
+func accountBrowserCookieSeeds(acc *Account) string {
+	values := make(map[string]string)
+	for _, cookie := range accountSeedCookies(acc) {
+		values[cookie.Name] = cookie.Value
 	}
-	cookieJS := ""
-	for _, part := range strings.Split(accountCookieHeader(acc), ";") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			cookieJS += fmt.Sprintf(`document.cookie=%q+%q;`, part, ";path="+cookiePath+";SameSite=Lax")
-		}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "{}"
 	}
+	return string(encoded)
+}
 
-	return fmt.Sprintf(`<script>(function(){`+
-		`%s`+
-		`var b=%q,p=%q,o=b+p,_c;`+
-		`function pub(x){return x==='/sw.js'||x==='/favicon.ico'||x==='/manifest.webmanifest'||x.indexOf('/_assets/')===0||x.indexOf('/images/')===0||x.indexOf('/front-static/')===0||x.indexOf('/static/')===0||x.indexOf('/dashboard')===0||x.indexOf('/proxy/')===0||/\.(?:js|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf)$/.test(x)}`+
-		`function ns(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.origin!==b||pub(x.pathname)||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}`+
-		`function nws(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.host!==location.host||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}`+
-		`Object.defineProperty(window,'CONFIG',{get:function(){return _c},set:function(v){_c=v;if(v&&typeof v==='object'){v.domainBaseUrl=o;if(v.messageStore)v.messageStore.url=o+'/msgstore';if(v.audioProcessor)v.audioProcessor.url=o+'/audioprocessor';v.isLocalhost=false;v.isLocalDevelopment=true}},configurable:true,enumerable:true});`+
-		`if(navigator.serviceWorker)navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(x){x.unregister()})});`+
-		`var re=/https?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;`+
-		`var wre=/wss?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;`+
-		`var bk=/googletagmanager\.com|customer\.io|app\.notion\.com\/exp|splunkcloud\.com|amplitude\.com/;`+
-		`var f=window.fetch;window.fetch=function(u,i){if(typeof u==='string'){if(bk.test(u))return Promise.resolve(new Response('',{status:200}));u=u.replace(re,o+'/_msgproxy/$1');u=ns(u)}else if(u&&u.url){u=new Request(ns(u.url),u)}return f.call(this,u,i)};`+
-		`var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){var a=[].slice.call(arguments);if(typeof u==='string')a[1]=ns(u.replace(re,o+'/_msgproxy/$1'));return xo.apply(this,a)};`+
-		`var W=window.WebSocket;window.WebSocket=function(u,q){if(typeof u==='string'){u=u.replace(wre,(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+p+'/_msgproxy/$1');u=nws(u)}return q!==undefined?new W(u,q):new W(u)};window.WebSocket.prototype=W.prototype;Object.keys(W).forEach(function(k){window.WebSocket[k]=W[k]});`+
-		`['pushState','replaceState'].forEach(function(k){var h=history[k];history[k]=function(s,t,u){return h.call(this,s,t,typeof u==='string'?ns(u):u)}});`+
-		`document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(a&&!a.hasAttribute('download')){var n=ns(a.href);if(n!==a.href)a.href=n}},true);`+
-		`var wo=window.open;window.open=function(u){var a=[].slice.call(arguments);if(typeof u==='string')a[0]=ns(u);return wo.apply(this,a)};`+
-		`})();</script>`, cookieJS, origin, routePrefix)
+func jsString(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return `""`
+	}
+	return string(encoded)
+}
+
+// configPatchScript installs an account-scoped browser environment before any
+// Notion bundle executes. HTTP authentication remains server-side; the browser
+// sees a virtual per-tab cookie jar and partitioned storage APIs so two accounts
+// can safely share the same localhost origin.
+func configPatchScript(origin, routePrefix string, acc *Account) string {
+	originJSON := jsString(origin)
+	prefixJSON := jsString(routePrefix)
+	cookieSeeds := accountBrowserCookieSeeds(acc)
+
+	return `<script>(function(){` +
+		`var b=` + originJSON + `,p=` + prefixJSON + `,o=b+p,_c,seed=` + cookieSeeds + `;` +
+		`var scope='__notion_manager_account__'+(p||'/ai-legacy')+'::';` +
+		`window.__NOTION_MANAGER_ACCOUNT_SCOPE__=p||'/ai';` +
+		`var protectedCookies={token_v2:1,notion_user_id:1,notion_users:1,notion_browser_id:1,device_id:1,file_token:1,notion_app_user_id:1};` +
+		`function isProtectedCookie(name){name=String(name||'').toLowerCase();return !!protectedCookies[name]||name.indexOf('notion_')===0||name.indexOf('sync_session')>=0||name.indexOf('session_sync_')===0}` +
+		`Object.keys(seed).forEach(function(k){protectedCookies[k.toLowerCase()]=1});` +
+		`var cookieDescriptor=window.Document&&Object.getOwnPropertyDescriptor(Document.prototype,'cookie');` +
+		`if(cookieDescriptor&&cookieDescriptor.get&&cookieDescriptor.set){` +
+		`var nativeCookieGet=cookieDescriptor.get.bind(document),nativeCookieSet=cookieDescriptor.set.bind(document),legacyCookieNames={};` +
+		`try{(nativeCookieGet()||'').split(';').forEach(function(part){part=part.trim();if(!part)return;var i=part.indexOf('='),n=(i<0?part:part.slice(0,i)).trim();if(isProtectedCookie(n))legacyCookieNames[n]=1})}catch(e){}` +
+		`Object.keys(protectedCookies).forEach(function(n){legacyCookieNames[n]=1});Object.keys(legacyCookieNames).forEach(function(n){['/','/ai',p].forEach(function(path){if(!path)return;try{nativeCookieSet(n+'=;Max-Age=0;path='+path+';SameSite=Lax')}catch(e){}})});` +
+		`var virtualCookieDescriptor={configurable:true,get:function(){var out=[],raw='';try{raw=nativeCookieGet()||''}catch(e){}raw.split(';').forEach(function(part){part=part.trim();if(!part)return;var i=part.indexOf('='),n=(i<0?part:part.slice(0,i)).trim();if(!isProtectedCookie(n))out.push(part)});Object.keys(seed).forEach(function(n){out.push(n+'='+seed[n])});return out.join('; ')},set:function(value){value=String(value);var first=value.split(';',1)[0],i=first.indexOf('='),n=(i<0?first:first.slice(0,i)).trim(),v=i<0?'':first.slice(i+1),lower=value.toLowerCase();if(isProtectedCookie(n)){protectedCookies[n.toLowerCase()]=1;if(lower.indexOf('max-age=0')>=0||lower.indexOf('expires=thu, 01 jan 1970')>=0)delete seed[n];else seed[n]=v;return value}return nativeCookieSet(value)}};` +
+		`try{Object.defineProperty(document,'cookie',virtualCookieDescriptor)}catch(e){try{Object.defineProperty(Document.prototype,'cookie',virtualCookieDescriptor)}catch(_){}}` +
+		`}` +
+		`function scopedStorage(name){try{var raw=window[name],pre=scope;function keys(){var out=[];for(var i=0;i<raw.length;i++){var k=raw.key(i);if(k&&k.indexOf(pre)===0)out.push(k.slice(pre.length))}return out}var scoped=new Proxy(raw,{get:function(t,k){if(k==='getItem')return function(x){return raw.getItem(pre+String(x))};if(k==='setItem')return function(x,v){return raw.setItem(pre+String(x),String(v))};if(k==='removeItem')return function(x){return raw.removeItem(pre+String(x))};if(k==='clear')return function(){keys().forEach(function(x){raw.removeItem(pre+x)})};if(k==='key')return function(i){var a=keys();return i>=0&&i<a.length?a[i]:null};if(k==='length')return keys().length;if(typeof k==='string'&&!(k in Storage.prototype))return raw.getItem(pre+k);var v=Reflect.get(t,k,t);return typeof v==='function'?v.bind(t):v},set:function(t,k,v){if(typeof k==='string'&&!(k in Storage.prototype)){raw.setItem(pre+k,String(v));return true}return Reflect.set(t,k,v,t)},deleteProperty:function(t,k){if(typeof k==='string'&&!(k in Storage.prototype)){raw.removeItem(pre+k);return true}return Reflect.deleteProperty(t,k)}});Object.defineProperty(window,name,{configurable:true,get:function(){return scoped}})}catch(e){}}` +
+		`scopedStorage('localStorage');scopedStorage('sessionStorage');` +
+		`try{var rawIDB=window.indexedDB;if(rawIDB){var scopedIDB=new Proxy(rawIDB,{get:function(t,k){if(k==='open')return function(name,version){return arguments.length>1?t.open(scope+String(name),version):t.open(scope+String(name))};if(k==='deleteDatabase')return function(name){return t.deleteDatabase(scope+String(name))};if(k==='databases'&&typeof t.databases==='function')return function(){return t.databases().then(function(items){return items.filter(function(x){return x.name&&x.name.indexOf(scope)===0}).map(function(x){return Object.assign({},x,{name:x.name.slice(scope.length)})})})};var v=Reflect.get(t,k,t);return typeof v==='function'?v.bind(t):v}});Object.defineProperty(window,'indexedDB',{configurable:true,get:function(){return scopedIDB}})}}catch(e){}` +
+		`try{var rawCaches=window.caches;if(rawCaches){var scopedCaches=new Proxy(rawCaches,{get:function(t,k){if(k==='open')return function(name){return t.open(scope+String(name))};if(k==='delete')return function(name){return t.delete(scope+String(name))};if(k==='has')return function(name){return t.has(scope+String(name))};if(k==='keys')return function(){return t.keys().then(function(items){return items.filter(function(x){return x.indexOf(scope)===0}).map(function(x){return x.slice(scope.length)})})};var v=Reflect.get(t,k,t);return typeof v==='function'?v.bind(t):v}});Object.defineProperty(window,'caches',{configurable:true,get:function(){return scopedCaches}})}}catch(e){}` +
+		`try{if(window.BroadcastChannel){var NativeBroadcastChannel=window.BroadcastChannel;var ScopedBroadcastChannel=function(name){return new NativeBroadcastChannel(scope+String(name))};ScopedBroadcastChannel.prototype=NativeBroadcastChannel.prototype;Object.setPrototypeOf(ScopedBroadcastChannel,NativeBroadcastChannel);window.BroadcastChannel=ScopedBroadcastChannel}}catch(e){}` +
+		`function pub(x){return x==='/sw.js'||x==='/favicon.ico'||x==='/manifest.webmanifest'||x.indexOf('/_assets/')===0||x.indexOf('/images/')===0||x.indexOf('/front-static/')===0||x.indexOf('/static/')===0||x.indexOf('/dashboard')===0||x.indexOf('/proxy/')===0||/\.(?:js|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf)$/.test(x)}` +
+		`function ns(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.origin!==b||pub(x.pathname)||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;if(x.pathname==='/'||x.pathname==='/ai')x.pathname=p;else x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}` +
+		`function nws(u){if(!p||typeof u!=='string')return u;try{var x=new URL(u,location.href);if(x.host!==location.host||x.pathname===p||x.pathname.indexOf(p+'/')===0)return u;x.pathname=p+(x.pathname.charAt(0)==='/'?x.pathname:'/'+x.pathname);return x.href}catch(e){return u}}` +
+		`Object.defineProperty(window,'CONFIG',{get:function(){return _c},set:function(v){_c=v;if(v&&typeof v==='object'){v.domainBaseUrl=o;if(v.messageStore)v.messageStore.url=o+'/msgstore';if(v.audioProcessor)v.audioProcessor.url=o+'/audioprocessor';v.isLocalhost=false;v.isLocalDevelopment=true}},configurable:true,enumerable:true});` +
+		`if(navigator.serviceWorker)navigator.serviceWorker.getRegistrations().then(function(r){r.forEach(function(x){x.unregister()})});` +
+		`var re=/https?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;` +
+		`var wre=/wss?:\/\/(msgstore[^\/]*\.(?:www\.notion\.so|app\.notion\.com))/;` +
+		`var bk=/googletagmanager\.com|customer\.io|app\.notion\.com\/exp|splunkcloud\.com|amplitude\.com/;` +
+		`var f=window.fetch;window.fetch=function(u,i){if(typeof u==='string'){if(bk.test(u))return Promise.resolve(new Response('',{status:200}));u=u.replace(re,o+'/_msgproxy/$1');u=ns(u)}else if(u&&u.url){u=new Request(ns(u.url),u)}return f.call(this,u,i)};` +
+		`var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){var a=[].slice.call(arguments);if(typeof u==='string')a[1]=ns(u.replace(re,o+'/_msgproxy/$1'));return xo.apply(this,a)};` +
+		`var W=window.WebSocket;window.WebSocket=function(u,q){if(typeof u==='string'){u=u.replace(wre,(location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+p+'/_msgproxy/$1');u=nws(u)}return q!==undefined?new W(u,q):new W(u)};window.WebSocket.prototype=W.prototype;Object.keys(W).forEach(function(k){window.WebSocket[k]=W[k]});` +
+		`['pushState','replaceState'].forEach(function(k){var h=history[k];history[k]=function(s,t,u){return h.call(this,s,t,typeof u==='string'?ns(u):u)}});` +
+		`document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(a&&!a.hasAttribute('download')){var n=ns(a.href);if(n!==a.href)a.href=n}},true);` +
+		`var wo=window.open;window.open=function(u){var a=[].slice.call(arguments);if(typeof u==='string')a[0]=ns(u);return wo.apply(this,a)};` +
+		`})();</script>`
 }
 
 func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -618,6 +650,7 @@ func (rp *ReverseProxy) proxyHTML(w http.ResponseWriter, r *http.Request, sess *
 	rpCopyHeaders(w, resp, true)
 	rewriteProxyLocationHeader(w, r)
 	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	w.Header().Set("Content-Security-Policy", "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: 'wasm-unsafe-eval'")
 	w.Header().Del("Content-Length") // body was modified
 	w.WriteHeader(resp.StatusCode)
