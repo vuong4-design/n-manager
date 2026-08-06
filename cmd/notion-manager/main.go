@@ -446,7 +446,7 @@ func main() {
 	log.Printf("  POST /admin/register              (bulk MS-SSO register, sync)")
 	log.Printf("  POST /admin/register/start        (async job)")
 	log.Printf("  GET  /admin/register/jobs/{id}/events (SSE progress)")
-	log.Printf("  GET  /ai/{account}                (Account-scoped Reverse Proxy -> notion.so)")
+	log.Printf("  GET  /ai/{account}                (Alias -> {account}.localhost/ai)")
 	log.Printf("  GET  /ai                          (Legacy Reverse Proxy entry)")
 
 	if err := http.ListenAndServe(":"+port, cors(apiKeyAuthMiddleware(apiKey, mux))); err != nil {

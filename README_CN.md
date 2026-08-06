@@ -34,7 +34,7 @@
 **notion-manager** 是一个本地运行的 Notion AI 管理工具。它通过自带的 Chrome 扩展提取 Notion 会话，或者用 Microsoft SSO 批量注册全新账号，构建多账号池，在后台自动刷新额度与模型状态，并对外提供四个入口：
 
 - `Dashboard`：账号池、Token 用量统计、批量注册抽屉
-- `Reverse Proxy`：通过隔离的 `/ai/<account>` 路径在同一浏览器会话中打开多个 Notion AI 账号
+- `Reverse Proxy`：`/ai/<account>` 入口会跳转到独立的 `<account>.localhost/ai` 浏览器源，可在同一会话打开多个 Notion AI 账号
 - `API 网关`：`POST /v1/messages`（Anthropic）、`POST /v1/chat/completions`、`POST /v1/responses`、`GET /v1/models`（OpenAI），`GET /models` 为兼容别名
 - `批量注册`：`POST /admin/register/start`，Provider 抽象（已内置 Microsoft）
 
@@ -109,7 +109,7 @@ export OPENAI_API_KEY=<your-api-key>
 
 ### 3. 本地 Notion Web 反向代理
 
-- 每个账号使用独立入口 `/ai/<account>`，旧 `/ai` 入口继续兼容
+- 每个账号仍从 `/ai/<account>` 进入，随后使用独立的 `<account>.localhost:<port>/ai`；旧 `/ai` 入口继续兼容
 - 通过 `/proxy/start` 为指定账号创建会话，再进入完整的 Notion AI Web 界面
 - 自动注入账号 Cookie，不需要在代理页重新登录
 - 转发 Notion HTML、`/api/*`、静态资源、`msgstore` 和 WebSocket

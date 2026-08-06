@@ -27,6 +27,8 @@ const (
 	msgstoreHost         = "msgstore.app.notion.com"
 	msgstoreOrigin       = "https://" + msgstoreHost
 	maxProxyRedirectHops = 3
+	proxyHostHandoffPath = "/_proxy/session"
+	proxyHostHandoffTTL  = 30 * time.Second
 )
 
 // Strip analytics/tracking script/noscript tags from HTML
@@ -87,6 +89,66 @@ func proxyAccountPath(acc *Account) string {
 	return "/ai/" + key
 }
 
+func proxyAccountHost(acc *Account) string {
+	key := proxyAccountRouteKey(acc)
+	if key == "" {
+		return ""
+	}
+	return key + ".localhost"
+}
+
+func requestHostname(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return strings.ToLower(strings.TrimSuffix(host, "."))
+	}
+	return strings.ToLower(strings.TrimSuffix(hostport, "."))
+}
+
+func requestPort(hostport string) string {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(hostport))
+	if err == nil {
+		return port
+	}
+	return ""
+}
+
+func proxyAccountHostKey(hostport string) (string, bool) {
+	host := requestHostname(hostport)
+	if !strings.HasSuffix(host, ".localhost") {
+		return "", false
+	}
+	key := strings.TrimSuffix(host, ".localhost")
+	if len(key) == 0 || len(key) > 63 || strings.Contains(key, ".") || !proxyRouteKeyPattern.MatchString(key) {
+		return "", false
+	}
+	return key, true
+}
+
+func supportsLocalAccountHosts(hostport string) bool {
+	host := requestHostname(hostport)
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func requestScheme(r *http.Request) string {
+	if r != nil && (r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")) {
+		return "https"
+	}
+	return "http"
+}
+
+func proxyAccountHostOrigin(r *http.Request, acc *Account) string {
+	host := proxyAccountHost(acc)
+	if port := requestPort(r.Host); port != "" {
+		host = net.JoinHostPort(host, port)
+	}
+	return requestScheme(r) + "://" + host
+}
+
 func splitAccountProxyPath(path string) (prefix, upstreamPath string, ok bool) {
 	if !strings.HasPrefix(path, "/ai/") {
 		return "", path, false
@@ -110,6 +172,20 @@ func splitAccountProxyPath(path string) (prefix, upstreamPath string, ok bool) {
 
 type proxyRoutePrefixContextKey struct{}
 
+type proxyHostAccountContextKey struct{}
+
+func withProxyHostAccount(r *http.Request, acc *Account) *http.Request {
+	return r.Clone(context.WithValue(r.Context(), proxyHostAccountContextKey{}, acc))
+}
+
+func proxyHostAccount(r *http.Request) *Account {
+	if r == nil {
+		return nil
+	}
+	acc, _ := r.Context().Value(proxyHostAccountContextKey{}).(*Account)
+	return acc
+}
+
 func withProxyRoutePrefix(r *http.Request, prefix, upstreamPath string) *http.Request {
 	clone := r.Clone(context.WithValue(r.Context(), proxyRoutePrefixContextKey{}, prefix))
 	clonedURL := *r.URL
@@ -127,16 +203,28 @@ func proxyRoutePrefix(r *http.Request) string {
 	return prefix
 }
 
-func (rp *ReverseProxy) accountForRoutePrefix(prefix string) *Account {
-	if rp == nil || rp.pool == nil || prefix == "" {
+func (rp *ReverseProxy) accountForRouteKey(key string) *Account {
+	if rp == nil || rp.pool == nil || key == "" {
 		return nil
 	}
 	for _, acc := range rp.pool.AccountsSnapshot() {
-		if proxyAccountPath(acc) == prefix && !rp.pool.isUnusable(acc) && !rp.pool.HasNoWorkspace(acc) {
+		if proxyAccountRouteKey(acc) == key && !rp.pool.isUnusable(acc) && !rp.pool.HasNoWorkspace(acc) {
 			return acc
 		}
 	}
 	return nil
+}
+
+func (rp *ReverseProxy) accountForRoutePrefix(prefix string) *Account {
+	return rp.accountForRouteKey(strings.TrimPrefix(prefix, "/ai/"))
+}
+
+func (rp *ReverseProxy) accountForProxyHost(hostport string) (*Account, bool) {
+	key, ok := proxyAccountHostKey(hostport)
+	if !ok {
+		return nil, false
+	}
+	return rp.accountForRouteKey(key), true
 }
 
 // ProxySession maps a proxy session cookie to a pooled account
@@ -146,11 +234,17 @@ type ProxySession struct {
 	CookieJar http.CookieJar
 }
 
+type proxyHostHandoff struct {
+	AccountID string
+	ExpiresAt time.Time
+}
+
 // ReverseProxy proxies requests to notion.so with session/cookie injection
 type ReverseProxy struct {
 	pool         *AccountPool
 	auth         *DashboardAuth
 	sessions     sync.Map // sessionID -> *ProxySession
+	handoffs     sync.Map // one-time token -> proxyHostHandoff
 	msgTransport http.RoundTripper
 }
 
@@ -291,6 +385,17 @@ func setProxySessionCookies(req *http.Request, sess *ProxySession) {
 	}
 }
 
+func setNotionAccountHeaders(req *http.Request, acc *Account) {
+	if req == nil || acc == nil {
+		return
+	}
+	req.Header.Set("x-notion-active-user-header", acc.UserID)
+	req.Header.Set("x-notion-space-id", acc.SpaceID)
+	if acc.ClientVersion != "" {
+		req.Header.Set("notion-client-version", acc.ClientVersion)
+	}
+}
+
 func proxySessionCookieHeader(sess *ProxySession, targetURL *url.URL) string {
 	req := &http.Request{Header: make(http.Header), URL: targetURL}
 	setProxySessionCookies(req, sess)
@@ -364,7 +469,8 @@ func isPublicProxyAssetPath(path string) bool {
 
 func rewriteProxyLocationHeader(w http.ResponseWriter, r *http.Request) {
 	prefix := proxyRoutePrefix(r)
-	if prefix == "" {
+	hostAccount := proxyHostAccount(r)
+	if prefix == "" && hostAccount == nil {
 		return
 	}
 	location := strings.TrimSpace(w.Header().Get("Location"))
@@ -382,7 +488,7 @@ func rewriteProxyLocationHeader(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
-	if !isPublicProxyAssetPath(path) && path != prefix && !strings.HasPrefix(path, prefix+"/") {
+	if prefix != "" && !isPublicProxyAssetPath(path) && path != prefix && !strings.HasPrefix(path, prefix+"/") {
 		path = prefix + "/" + strings.TrimPrefix(path, "/")
 	}
 	target.Scheme = ""
@@ -392,12 +498,121 @@ func rewriteProxyLocationHeader(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", target.String())
 }
 
+func (rp *ReverseProxy) pruneProxyHostHandoffs(now time.Time) {
+	if rp == nil {
+		return
+	}
+	rp.handoffs.Range(func(key, value interface{}) bool {
+		handoff, ok := value.(proxyHostHandoff)
+		if !ok || now.After(handoff.ExpiresAt) {
+			rp.handoffs.Delete(key)
+		}
+		return true
+	})
+}
+
+func (rp *ReverseProxy) createProxyHostHandoff(acc *Account) string {
+	if rp == nil || acc == nil {
+		return ""
+	}
+	now := time.Now()
+	rp.pruneProxyHostHandoffs(now)
+	acc.EnsureAccountID()
+	token := strings.ReplaceAll(generateUUIDv4(), "-", "")
+	rp.handoffs.Store(token, proxyHostHandoff{
+		AccountID: acc.AccountID,
+		ExpiresAt: now.Add(proxyHostHandoffTTL),
+	})
+	return token
+}
+
+func (rp *ReverseProxy) consumeProxyHostHandoff(token string) string {
+	if rp == nil || token == "" {
+		return ""
+	}
+	value, ok := rp.handoffs.LoadAndDelete(token)
+	if !ok {
+		return ""
+	}
+	handoff, ok := value.(proxyHostHandoff)
+	if !ok || handoff.AccountID == "" || time.Now().After(handoff.ExpiresAt) {
+		return ""
+	}
+	return handoff.AccountID
+}
+
+func validProxyHostNext(raw string) string {
+	if raw == "" {
+		return "/ai"
+	}
+	target, err := url.ParseRequestURI(raw)
+	if err != nil || target.IsAbs() || target.Host != "" || !strings.HasPrefix(target.Path, "/") || strings.HasPrefix(target.Path, "//") {
+		return "/ai"
+	}
+	for _, reserved := range []string{"/_proxy", "/admin", "/dashboard", "/proxy", "/v1", "/models", "/health"} {
+		if target.Path == reserved || strings.HasPrefix(target.Path, reserved+"/") {
+			return "/ai"
+		}
+	}
+	return target.RequestURI()
+}
+
+func (rp *ReverseProxy) proxyHostHandoffURL(r *http.Request, acc *Account, next string) string {
+	target, _ := url.Parse(proxyAccountHostOrigin(r, acc) + proxyHostHandoffPath)
+	query := target.Query()
+	query.Set("ticket", rp.createProxyHostHandoff(acc))
+	query.Set("next", validProxyHostNext(next))
+	target.RawQuery = query.Encode()
+	return target.String()
+}
+
+func (rp *ReverseProxy) redirectAccountPathToHost(w http.ResponseWriter, r *http.Request, routePrefix, upstreamPath string) bool {
+	if !supportsLocalAccountHosts(r.Host) {
+		return false
+	}
+	acc := rp.accountForRoutePrefix(routePrefix)
+	if acc == nil {
+		http.NotFound(w, r)
+		return true
+	}
+	scopedRequest := withProxyRoutePrefix(r, routePrefix, upstreamPath)
+	authorized := rp.getSession(scopedRequest) != nil || rp.auth == nil || !rp.auth.HasAdminPassword() || rp.auth.ValidateSession(r)
+	if !authorized {
+		http.Redirect(w, r, "/dashboard/", http.StatusFound)
+		return true
+	}
+	nextURL := &url.URL{Path: upstreamPath, RawQuery: r.URL.RawQuery}
+	http.Redirect(w, r, rp.proxyHostHandoffURL(r, acc, nextURL.RequestURI()), http.StatusFound)
+	return true
+}
+
+func (rp *ReverseProxy) handleProxyHostHandoff(w http.ResponseWriter, r *http.Request, hostAccount *Account) bool {
+	if r.URL.Path != proxyHostHandoffPath {
+		return false
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return true
+	}
+	accountID := rp.consumeProxyHostHandoff(r.URL.Query().Get("ticket"))
+	if hostAccount == nil || accountID == "" || accountID != hostAccount.AccountID {
+		http.Error(w, "invalid or expired proxy session ticket", http.StatusUnauthorized)
+		return true
+	}
+	rp.createTargetedSession(w, hostAccount, "/")
+	http.Redirect(w, r, validProxyHostNext(r.URL.Query().Get("next")), http.StatusFound)
+	return true
+}
+
 // getSession retrieves an existing session for the request.
-// Sessions are normally created via /proxy/start. A bookmarked account path
-// may recreate its path-scoped session when the dashboard session is valid.
+// Sessions are normally created through the one-time localhost handoff. On
+// non-local deployments, the legacy path fallback may recreate a path-scoped
+// session while the dashboard session is valid.
 // Returns nil if no valid session exists — caller should redirect to /dashboard/.
 func (rp *ReverseProxy) getSession(r *http.Request) *ProxySession {
 	prefix := proxyRoutePrefix(r)
+	hostAccount := proxyHostAccount(r)
 	for _, cookie := range r.Cookies() {
 		if cookie.Name != "np_session" {
 			continue
@@ -407,6 +622,9 @@ func (rp *ReverseProxy) getSession(r *http.Request) *ProxySession {
 			continue
 		}
 		sess := value.(*ProxySession)
+		if hostAccount != nil && (sess.Account == nil || sess.Account.AccountID != hostAccount.AccountID) {
+			continue
+		}
 		if prefix == "" || proxyAccountPath(sess.Account) == prefix {
 			return sess
 		}
@@ -485,9 +703,28 @@ func configPatchScript(origin, routePrefix string, acc *Account) string {
 
 func (rp *ReverseProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	originalPath := r.URL.Path
-	routePrefix, upstreamPath, namespaced := splitAccountProxyPath(originalPath)
-	if namespaced {
-		r = withProxyRoutePrefix(r, routePrefix, upstreamPath)
+	hostAccount, accountHost := rp.accountForProxyHost(r.Host)
+	if accountHost {
+		if hostAccount == nil {
+			http.NotFound(w, r)
+			return
+		}
+		r = withProxyHostAccount(r, hostAccount)
+		if rp.handleProxyHostHandoff(w, r, hostAccount) {
+			return
+		}
+	}
+
+	var routePrefix, upstreamPath string
+	var namespaced bool
+	if !accountHost {
+		routePrefix, upstreamPath, namespaced = splitAccountProxyPath(originalPath)
+		if namespaced && rp.redirectAccountPathToHost(w, r, routePrefix, upstreamPath) {
+			return
+		}
+		if namespaced {
+			r = withProxyRoutePrefix(r, routePrefix, upstreamPath)
+		}
 	}
 	path := r.URL.Path
 
@@ -608,6 +845,7 @@ func (rp *ReverseProxy) proxyHTML(w http.ResponseWriter, r *http.Request, sess *
 		req.Header.Set("Accept-Language", al)
 	}
 	setProxySessionCookies(req, sess)
+	setNotionAccountHeaders(req, sess.Account)
 	// Deliberately omit Accept-Encoding so we get uncompressed HTML for patching
 
 	client := reverseProxyHTTPClient(30*time.Second, sess)
@@ -680,11 +918,7 @@ func (rp *ReverseProxy) proxyAPI(w http.ResponseWriter, r *http.Request, sess *P
 
 	acc := sess.Account
 	setProxySessionCookies(req, sess)
-	req.Header.Set("x-notion-active-user-header", acc.UserID)
-	req.Header.Set("x-notion-space-id", acc.SpaceID)
-	if acc.ClientVersion != "" {
-		req.Header.Set("notion-client-version", acc.ClientVersion)
-	}
+	setNotionAccountHeaders(req, acc)
 	req.Header.Set("Origin", notionOrigin)
 	req.Header.Set("Referer", notionReferer)
 
@@ -715,7 +949,7 @@ func (rp *ReverseProxy) proxyGeneric(w http.ResponseWriter, r *http.Request, ses
 
 	for k, vals := range r.Header {
 		lk := strings.ToLower(k)
-		if lk == "host" || lk == "cookie" {
+		if lk == "host" || lk == "cookie" || lk == "origin" || lk == "referer" {
 			continue
 		}
 		for _, v := range vals {
@@ -723,6 +957,13 @@ func (rp *ReverseProxy) proxyGeneric(w http.ResponseWriter, r *http.Request, ses
 		}
 	}
 	setProxySessionCookies(req, sess)
+	setNotionAccountHeaders(req, sess.Account)
+	if r.Header.Get("Origin") != "" {
+		req.Header.Set("Origin", notionOrigin)
+	}
+	if r.Header.Get("Referer") != "" {
+		req.Header.Set("Referer", notionReferer)
+	}
 
 	client := reverseProxyHTTPClient(30*time.Second, sess)
 	resp, err := client.Do(req)

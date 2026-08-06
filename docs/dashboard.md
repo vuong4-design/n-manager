@@ -114,7 +114,7 @@ Editable knobs are persisted into the active config file: local launches use
 
 1. Click the best account or a specific workspace card in the dashboard
 2. The browser hits `/proxy/start?best=true` or `/proxy/start?account_id=<account_id>`
-3. The server creates a path-scoped `np_session`, then opens the account-specific `/ai/<account>` route
+3. The server opens `/ai/<account>`, exchanges a short-lived one-time ticket on `<account>.localhost`, and sets a host-only `np_session` before entering the native `/ai` route
 4. Notion HTML, API requests, assets, and realtime connections all flow through that account
 5. Accounts whose Notion workspace is missing return `409` instead of redirecting (the dashboard surfaces a "no workspace" badge so the user picks another account)
 

@@ -110,7 +110,7 @@ export CONFIG_PATH=/app/accounts/.notion-manager-config.yaml # 可选；ACCOUNTS
 | `POST /v1/messages` | Anthropic Messages API | API Key |
 | `GET /dashboard/` | 管理面板 | Dashboard 登录 |
 | `GET /proxy/start` | 创建账号代理会话 | Dashboard 登录 |
-| `GET /ai/<account>` | 按账号隔离的 Notion Web 代理入口，可在同一浏览器会话打开多个账号 | Dashboard 会话用于重建，随后使用路径级 `np_session` |
+| `GET /ai/<account>` | 本地入口，通过一次性票据跳转到 `<account>.localhost:<port>/ai`；保留 Notion SPA 原生 `/ai` 路径 | Dashboard 会话或已有账号会话，随后使用主机级 `np_session` |
 | `GET /ai` | 旧版 Notion Web 代理入口 | `np_session` |
 | `GET /admin/accounts` | 账号列表（支持 `q` / `page` / `page_size`） | Dashboard 会话 |
 | `DELETE /admin/accounts/{email}` | 删除账号 JSON + 池中条目 | Dashboard 会话 |

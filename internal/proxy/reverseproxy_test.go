@@ -1,12 +1,16 @@
 package proxy
 
 import (
+	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 type reverseProxyRoundTripper func(*http.Request) (*http.Response, error)
@@ -500,5 +504,237 @@ func TestGetSessionRejectsWrongAccountCookieForNamespace(t *testing.T) {
 
 	if got := rp.getSession(request); got != nil {
 		t.Fatalf("cross-account session accepted: %#v", got)
+	}
+}
+
+func TestProxyAccountHostIsStableLocalhostDNSLabel(t *testing.T) {
+	acc := &Account{UserID: "user-host", UserEmail: "Account.Host+one@example.com", SpaceID: "space-host"}
+	acc.EnsureAccountID()
+	host := proxyAccountHost(acc)
+	if !strings.HasPrefix(host, "account-host-one-example-com--") || !strings.HasSuffix(host, ".localhost") {
+		t.Fatalf("unexpected account host %q", host)
+	}
+	key, ok := proxyAccountHostKey(host + ":3100")
+	if !ok || key != proxyAccountRouteKey(acc) {
+		t.Fatalf("proxyAccountHostKey(%q)=(%q,%v)", host+":3100", key, ok)
+	}
+	if len(key) > 63 {
+		t.Fatalf("account host key exceeds DNS label limit: %d", len(key))
+	}
+}
+
+func TestAccountPathAliasRedirectsThroughOneTimeHostHandoff(t *testing.T) {
+	pool := NewAccountPool()
+	acc := &Account{
+		TokenV2:   "token-host",
+		UserID:    "user-host",
+		UserEmail: "account.host@example.com",
+		SpaceID:   "space-host",
+		QuotaInfo: &QuotaInfo{IsEligible: true},
+	}
+	pool.AddAccount(acc)
+	rp := NewReverseProxy(pool, NewDashboardAuth("", ""))
+
+	entry := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:3100"+proxyAccountPath(acc), nil)
+	entryRecorder := httptest.NewRecorder()
+	rp.ServeHTTP(entryRecorder, entry)
+	if entryRecorder.Code != http.StatusFound {
+		t.Fatalf("entry status=%d body=%s", entryRecorder.Code, entryRecorder.Body.String())
+	}
+	handoffURL, err := url.Parse(entryRecorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handoffURL.Host != proxyAccountHost(acc)+":3100" || handoffURL.Path != proxyHostHandoffPath {
+		t.Fatalf("handoff location=%q", handoffURL.String())
+	}
+	if handoffURL.Query().Get("ticket") == "" || handoffURL.Query().Get("next") != "/ai" {
+		t.Fatalf("handoff query=%q", handoffURL.RawQuery)
+	}
+
+	handoff := httptest.NewRequest(http.MethodGet, handoffURL.String(), nil)
+	handoffRecorder := httptest.NewRecorder()
+	rp.ServeHTTP(handoffRecorder, handoff)
+	if handoffRecorder.Code != http.StatusFound || handoffRecorder.Header().Get("Location") != "/ai" {
+		t.Fatalf("handoff status=%d location=%q body=%s", handoffRecorder.Code, handoffRecorder.Header().Get("Location"), handoffRecorder.Body.String())
+	}
+	cookies := handoffRecorder.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "np_session" || cookies[0].Path != "/" || !cookies[0].HttpOnly {
+		t.Fatalf("unexpected host session cookie: %#v", cookies)
+	}
+
+	hostRequest := httptest.NewRequest(http.MethodGet, "http://"+proxyAccountHost(acc)+":3100/ai", nil)
+	hostRequest.AddCookie(cookies[0])
+	hostRequest = withProxyHostAccount(hostRequest, acc)
+	sess := rp.getSession(hostRequest)
+	if sess == nil || sess.Account != acc {
+		t.Fatalf("host session did not resolve selected account: %#v", sess)
+	}
+
+	replayRecorder := httptest.NewRecorder()
+	rp.ServeHTTP(replayRecorder, httptest.NewRequest(http.MethodGet, handoffURL.String(), nil))
+	if replayRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed handoff status=%d, want %d", replayRecorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestProxyHostHandoffCannotCrossAccounts(t *testing.T) {
+	pool := NewAccountPool()
+	first := &Account{TokenV2: "token-a", UserID: "user-a", UserEmail: "a@example.com", SpaceID: "space-a", QuotaInfo: &QuotaInfo{IsEligible: true}}
+	second := &Account{TokenV2: "token-b", UserID: "user-b", UserEmail: "b@example.com", SpaceID: "space-b", QuotaInfo: &QuotaInfo{IsEligible: true}}
+	pool.AddAccount(first)
+	pool.AddAccount(second)
+	rp := NewReverseProxy(pool)
+	ticket := rp.createProxyHostHandoff(first)
+
+	request := httptest.NewRequest(http.MethodGet, "http://"+proxyAccountHost(second)+":3100"+proxyHostHandoffPath+"?ticket="+url.QueryEscape(ticket)+"&next=/ai", nil)
+	recorder := httptest.NewRecorder()
+	rp.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-account handoff status=%d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAccountHostDoesNotInterpretNotionAIPathAsAccountNamespace(t *testing.T) {
+	acc := &Account{UserID: "user", UserEmail: "host@example.com", SpaceID: "space", QuotaInfo: &QuotaInfo{IsEligible: true}}
+	pool := NewAccountPool()
+	pool.AddAccount(acc)
+	rp := NewReverseProxy(pool)
+	resolved, accountHost := rp.accountForProxyHost(proxyAccountHost(acc) + ":3100")
+	if !accountHost || resolved != acc {
+		t.Fatalf("account host resolution=(%#v,%v)", resolved, accountHost)
+	}
+	if prefix, _, ok := splitAccountProxyPath("/ai/notion-page-id"); !ok || prefix != "/ai/notion-page-id" {
+		t.Fatalf("path parser baseline changed: prefix=%q ok=%v", prefix, ok)
+	}
+	// ServeHTTP skips splitAccountProxyPath entirely when accountHost is true;
+	// the browser-visible path therefore remains the native Notion /ai route.
+}
+
+func TestSetNotionAccountHeadersIncludesWorkspaceForHTMLBootstrap(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://app.notion.com/ai", nil)
+	setNotionAccountHeaders(req, &Account{
+		UserID:        "active-user",
+		SpaceID:       "active-space",
+		ClientVersion: "23.13.0.0",
+	})
+	if got := req.Header.Get("x-notion-active-user-header"); got != "active-user" {
+		t.Fatalf("active user header=%q", got)
+	}
+	if got := req.Header.Get("x-notion-space-id"); got != "active-space" {
+		t.Fatalf("space header=%q", got)
+	}
+	if got := req.Header.Get("notion-client-version"); got != "23.13.0.0" {
+		t.Fatalf("client version header=%q", got)
+	}
+}
+
+func TestRewriteProxyLocationHeaderKeepsNativePathOnAccountHost(t *testing.T) {
+	acc := &Account{UserID: "user", UserEmail: "host@example.com", SpaceID: "space"}
+	request := httptest.NewRequest(http.MethodGet, "http://"+proxyAccountHost(acc)+":3100/ai", nil)
+	request = withProxyHostAccount(request, acc)
+	recorder := httptest.NewRecorder()
+	recorder.Header().Set("Location", "https://app.notion.com/3abc?page=1")
+	rewriteProxyLocationHeader(recorder, request)
+	if got := recorder.Header().Get("Location"); got != "/3abc?page=1" {
+		t.Fatalf("account-host redirect=%q", got)
+	}
+}
+
+func TestValidProxyHostNextRejectsExternalAndHandoffURLs(t *testing.T) {
+	for _, raw := range []string{
+		"https://evil.example/",
+		"//evil.example/",
+		proxyHostHandoffPath + "?ticket=x",
+		"/admin/accounts",
+		"/dashboard/",
+		"/proxy/start",
+		"/v1/messages",
+	} {
+		if got := validProxyHostNext(raw); got != "/ai" {
+			t.Fatalf("validProxyHostNext(%q)=%q", raw, got)
+		}
+	}
+	if got := validProxyHostNext("/chat/thread?x=1"); got != "/chat/thread?x=1" {
+		t.Fatalf("valid internal next=%q", got)
+	}
+}
+
+func TestAccountHostHandoffUsesIndependentBrowserCookieOrigin(t *testing.T) {
+	pool := NewAccountPool()
+	acc := &Account{
+		TokenV2:   "token-http",
+		UserID:    "user-http",
+		UserEmail: "http@example.com",
+		SpaceID:   "space-http",
+		QuotaInfo: &QuotaInfo{IsEligible: true},
+	}
+	pool.AddAccount(acc)
+	rp := NewReverseProxy(pool, NewDashboardAuth("", ""))
+	server := httptest.NewServer(rp)
+	defer server.Close()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Jar:       jar,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Path == "/ai" {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+
+	response, err := client.Get(server.URL + proxyAccountPath(acc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusFound || response.Header.Get("Location") != "/ai" {
+		t.Fatalf("handoff response status=%d location=%q", response.StatusCode, response.Header.Get("Location"))
+	}
+	// response.Request is the handoff request and therefore already carries
+	// the account hostname and original listener port.
+	accountOrigin, err := url.Parse("http://" + response.Request.URL.Host + "/ai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, cookie := range jar.Cookies(accountOrigin) {
+		if cookie.Name == "np_session" && cookie.Value != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("account host cookie missing for %s", accountOrigin.String())
+	}
+	rootOrigin, _ := url.Parse(server.URL + "/ai")
+	for _, cookie := range jar.Cookies(rootOrigin) {
+		if cookie.Name == "np_session" {
+			t.Fatalf("account session leaked to root origin: %#v", cookie)
+		}
+	}
+}
+
+func TestCreateProxyHostHandoffPrunesExpiredTickets(t *testing.T) {
+	rp := NewReverseProxy(NewAccountPool())
+	rp.handoffs.Store("expired", proxyHostHandoff{AccountID: "old", ExpiresAt: time.Now().Add(-time.Second)})
+	acc := &Account{UserID: "user", SpaceID: "space"}
+	if token := rp.createProxyHostHandoff(acc); token == "" {
+		t.Fatal("new handoff token is empty")
+	}
+	if _, ok := rp.handoffs.Load("expired"); ok {
+		t.Fatal("expired handoff was not pruned")
 	}
 }

@@ -375,8 +375,9 @@ func HandleDashboard(auth *DashboardAuth) http.Handler {
 	return auth.RequireAuth(inner)
 }
 
-// HandleProxyStart creates a path-scoped session for a specific account and
-// redirects to its stable /ai/<account> namespace.
+// HandleProxyStart creates a compatibility path session and redirects to the
+// stable /ai/<account> alias. Local requests then exchange a one-time ticket
+// for a host-only session on <account>.localhost before entering native /ai.
 // Requires valid dashboard session.
 func HandleProxyStart(pool *AccountPool, rp *ReverseProxy, auth *DashboardAuth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
