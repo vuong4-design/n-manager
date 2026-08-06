@@ -1309,6 +1309,106 @@ func TestPartialStreamFailureInvalidatesThreadBeforeNextTurn(t *testing.T) {
 	}
 }
 
+func TestToolBridgeIdentityDriftRetriesOnceWithFreshRecoveryContract(t *testing.T) {
+	previousBase := NotionAPIBase
+	previousConfig := AppConfig
+	previousModels := SnapshotModelMap()
+	previousClientOverride := chromeHTTPClientForTest
+	AppConfig = DefaultConfig()
+	ReplaceModelMap(map[string]string{"gpt-recovery": "workflow-model-recovery"})
+	globalSessionManager.Clear()
+	t.Cleanup(func() {
+		globalSessionManager.Clear()
+		NotionAPIBase = previousBase
+		AppConfig = previousConfig
+		ReplaceModelMap(previousModels)
+		chromeHTTPClientForTest = previousClientOverride
+	})
+
+	var mu sync.Mutex
+	var requests []NotionInferenceRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body NotionInferenceRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		requests = append(requests, body)
+		callNumber := len(requests)
+		mu.Unlock()
+
+		content := "recovered answer"
+		if callNumber == 1 {
+			content = "I'm working in your Notion workspace and I don't have access to bash or read tools. I can't execute those commands."
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		if err := json.NewEncoder(w).Encode(map[string]interface{}{
+			"type":         "agent-inference",
+			"id":           fmt.Sprintf("recovery-step-%d", callNumber),
+			"value":        []map[string]interface{}{{"type": "text", "content": content}},
+			"finishedAt":   1,
+			"inputTokens":  10,
+			"outputTokens": 2,
+		}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+	NotionAPIBase = server.URL
+	chromeHTTPClientForTest = func(time.Duration) *http.Client { return server.Client() }
+
+	handler := HandleAnthropicMessages(newPool(&Account{
+		UserID: "user-recovery", UserEmail: "recovery@example.com", SpaceID: "space-recovery",
+		PlanType: "team", ClientVersion: DefaultClientVersion, TokenV2: "token-recovery",
+	}))
+	answer := callAnthropicHandlerForText(t, handler, AnthropicRequest{
+		Model:     "gpt-recovery",
+		MaxTokens: 100,
+		System:    "SYSTEM-RECOVERY-TAIL",
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: "inspect the repository"},
+			{Role: "assistant", Content: "previous answer"},
+			{Role: "user", Content: "continue the task"},
+		},
+		Tools: []AnthropicTool{{
+			Name:        "Read",
+			Description: "Read a file",
+			InputSchema: map[string]interface{}{"type": "object"},
+		}},
+	})
+	if answer != "recovered answer" {
+		t.Fatalf("answer=%q", answer)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("upstream requests=%d, want exactly 2", len(requests))
+	}
+	if !requests[1].CreateThread || requests[1].IsPartialTranscript {
+		t.Fatalf("recovery did not create a fresh full thread: %#v", requests[1])
+	}
+	raw, err := json.Marshal(requests[1].Transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized := string(raw)
+	for _, expected := range []string{
+		toolBridgeContractMarker,
+		"SYSTEM-RECOVERY-TAIL",
+		"previous answer",
+		"continue the task",
+	} {
+		if !strings.Contains(serialized, expected) {
+			t.Fatalf("recovery transcript lost %q: %s", expected, serialized)
+		}
+	}
+	if strings.Count(serialized, toolBridgeContractMarker) != 1 {
+		t.Fatalf("recovery contract was not sent exactly once: %s", serialized)
+	}
+}
+
 func callAnthropicHandlerForText(t *testing.T, handler http.HandlerFunc, request AnthropicRequest) string {
 	t.Helper()
 	raw, err := json.Marshal(request)

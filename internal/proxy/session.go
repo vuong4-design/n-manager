@@ -440,8 +440,8 @@ func buildRecoveryMessages(messages []ChatMessage, skipEntry func(ChatMessage, s
 	if !needsFreshThreadRecovery(messages) {
 		return messages
 	}
-	const maxHistoryChars = 4000
-	const maxEntryChars = 900
+	const maxHistoryChars = 8000
+	const maxEntryChars = 1200
 	lastUserIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
 		if isMeaningfulUserMessage(messages[i]) {

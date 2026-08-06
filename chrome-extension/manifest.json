@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Notion AI Config Extractor",
-  "version": "1.5",
+  "version": "1.8",
   "description": "Extract Notion AI account config (token_v2, userId, spaceId) / 一键提取 Notion AI 账号配置",
   "permissions": [
     "cookies",
@@ -21,5 +21,6 @@
   ],
   "action": {
     "default_popup": "popup.html"
-  }
+  },
+  "incognito": "split"
 }

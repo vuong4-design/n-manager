@@ -429,6 +429,7 @@
     "value_new_thread_account_switch": "换号后新建会话并完整重放",
     "value_new_thread_after_error": "上游错误后新建会话并完整重放",
     "value_required_tool_missing": "缺少必需工具调用",
+    "value_tool_bridge_identity_drift": "工具环境身份漂移",
     "value_not_applicable": "不适用",
     "value_success": "成功",
     "value_quota_exhausted": "额度耗尽",

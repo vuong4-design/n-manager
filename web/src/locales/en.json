@@ -429,6 +429,7 @@
     "value_new_thread_account_switch": "New thread after account switch",
     "value_new_thread_after_error": "New thread after upstream error",
     "value_required_tool_missing": "Required tool call missing",
+    "value_tool_bridge_identity_drift": "Tool environment identity drift",
     "value_not_applicable": "Not applicable",
     "value_success": "Success",
     "value_quota_exhausted": "Quota exhausted",

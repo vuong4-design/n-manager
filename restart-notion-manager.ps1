@@ -52,7 +52,12 @@ if (-not (Test-Path $exePath)) {
 
 # 4. start detached
 Write-Host "starting notion-manager on port $port..." -ForegroundColor Yellow
-Start-Process -FilePath $exePath -WindowStyle Minimized
+$stdoutLog = Join-Path $repoDir "nm-out.log"
+$stderrLog = Join-Path $repoDir "nm-err.log"
+Start-Process -FilePath $exePath -WorkingDirectory $repoDir -WindowStyle Minimized `
+    -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+Write-Host "stdout: $stdoutLog" -ForegroundColor Gray
+Write-Host "stderr: $stderrLog" -ForegroundColor Gray
 Start-Sleep $WaitSeconds
 
 # 5. verify via health check
@@ -65,5 +70,5 @@ try {
     Write-Host "restart complete." -ForegroundColor Cyan
 } catch {
     Write-Warning "health check failed: $($_.Exception.Message)"
-    Write-Warning "server may still be starting — check http://localhost:$port/health manually."
+    Write-Warning "server may still be starting; check the health endpoint manually."
 }

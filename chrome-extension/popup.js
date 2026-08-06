@@ -74,81 +74,88 @@ async function extract() {
   statusEl.innerHTML = s.extracting;
 
   try {
-    // Step 1: Get all cookies via chrome.cookies API (can read HttpOnly!)
-    // Query multiple domain variants because token_v2 may be host-only on
-    // notion.so (not a subdomain) and chrome.cookies.getAll domain matching
-    // is exact-ish. Also try url-based query as a fallback.
-    const cookieDomains = ['notion.so', 'www.notion.so', '.notion.so', 'notion.com', 'www.notion.com', '.notion.com', 'app.notion.com'];
-    let allCookies = [];
-    const _debugPerDomain = [];
-    const _seen = new Set();
-    for (const d of cookieDomains) {
-      const cks = await new Promise((resolve) => {
-        chrome.cookies.getAll({ domain: d }, (cookies) => resolve(cookies || []));
+    // Step 1: identify the active Notion tab and its cookie store. Incognito
+    // tabs use a separate store, and URL-based queries prevent cookies from a
+    // different Notion profile/domain from being selected accidentally.
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    let tabUrl;
+    try { tabUrl = new URL(tab?.url || ''); } catch (_) { tabUrl = null; }
+    if (!tab || !tabUrl || !NotionCookieSelection.isNotionHostname(tabUrl.hostname)) {
+      throw new Error(s.openNotionFirst);
+    }
+
+    let stores = [];
+    if (typeof chrome.cookies.getAllCookieStores === 'function') {
+      stores = await new Promise((resolve) => {
+        chrome.cookies.getAllCookieStores((items) => resolve(items || []));
       });
-      _debugPerDomain.push(`${d}: ${cks.length} cookies`);
-      for (const c of cks) {
-        const key = `${c.domain}|${c.name}|${c.path}`;
-        if (!_seen.has(key)) { _seen.add(key); allCookies.push(c); }
-      }
     }
+    const storeId = NotionCookieSelection.resolveCookieStoreId(tab, stores);
+    const withStore = (details) => storeId === undefined ? details : { ...details, storeId };
+    const debugQueries = [`store=${storeId ?? 'default'} incognito=${Boolean(tab.incognito)}`];
+
+    let allCookies = await new Promise((resolve) => {
+      chrome.cookies.getAll(withStore({ url: tab.url }), (cookies) => resolve(cookies || []));
+    });
+    debugQueries.push(`url ${tabUrl.origin}: ${allCookies.length}`);
+
     if (allCookies.length === 0) {
-      // Fallback: url-based query on both domains
-      for (const u of ['https://www.notion.so', 'https://app.notion.com', 'https://www.notion.com']) {
-        const urlCks = await new Promise((resolve) => {
-          chrome.cookies.getAll({ url: u }, (cookies) => resolve(cookies || []));
+      const cookieDomains = [
+        'notion.so', 'www.notion.so', '.notion.so',
+        'notion.com', 'www.notion.com', '.notion.com', 'app.notion.com',
+      ];
+      for (const domain of cookieDomains) {
+        const cookies = await new Promise((resolve) => {
+          chrome.cookies.getAll(withStore({ domain }), (items) => resolve(items || []));
         });
-        _debugPerDomain.push(`url ${u}: ${urlCks?.length || 0} cookies`);
-        for (const c of urlCks) {
-          const key = `${c.domain}|${c.name}|${c.path}`;
-          if (!_seen.has(key)) { _seen.add(key); allCookies.push(c); }
-        }
+        debugQueries.push(`${domain}: ${cookies.length}`);
+        allCookies.push(...cookies);
       }
     }
+
+    allCookies = NotionCookieSelection.cookiesForTab(allCookies, tab.url, storeId);
     if (allCookies.length === 0) throw new Error(s.noCookies);
 
-    // Dedupe by name (keep first occurrence)
+    const tokenCookie = NotionCookieSelection.selectNotionTokenCookie(allCookies, tab.url, storeId);
+    if (!tokenCookie) {
+      const cookieSummary = allCookies
+        .map((cookie) => `${cookie.domain} ${cookie.name} path=${cookie.path || '/'} store=${cookie.storeId ?? 'default'}`)
+        .join('\n');
+      throw new Error(`${s.noToken}\n\n[debug] queries:\n${debugQueries.join('\n')}\n\n[debug] matching cookies:\n${cookieSummary}`);
+    }
+    const token = tokenCookie.value;
+
+    // Prefer the most specific browser/device cookie applicable to this tab.
     const cookieMap = {};
-    for (const c of allCookies) {
-      if (!(c.name in cookieMap)) cookieMap[c.name] = c.value;
+    for (const cookie of allCookies) {
+      if (!(cookie.name in cookieMap)) cookieMap[cookie.name] = cookie.value;
     }
+    cookieMap.token_v2 = token;
 
-    const token = cookieMap['token_v2'];
-    if (!token) {
-      // Debug: show what cookies we DID find so the user can troubleshoot
-      const debugInfo = allCookies.map(c => `${c.domain} ${c.name} (${c.hostOnly ? 'host-only' : 'domain'})`).join('\n');
-      const domainDebug = _debugPerDomain.join('\n');
-      throw new Error(`${s.noToken}\n\n[debug] per-domain:\n${domainDebug}\n\n[debug] found ${allCookies.length} cookies:\n${debugInfo}`);
-    }
-
-    // Store token globally for copy button
+    // Store token globally for copy button.
     window._extractedToken = token;
 
-    const browserId = cookieMap['notion_browser_id'] || '';
-    const deviceId = cookieMap['device_id'] || '';
-    const fullCookie = allCookies.map(c => `${c.name}=${c.value}`).join('; ');
+    const browserId = cookieMap.notion_browser_id || '';
+    const deviceId = cookieMap.device_id || '';
 
-    // Dedupe by name for fullCookie too (avoid duplicate cookie headers)
-    const seenNames = new Set();
+    // Build the same cookie header the active tab would send, with one value
+    // per cookie name ordered by domain/path specificity.
     const fullCookieParts = [];
-    for (const c of allCookies) {
-      if (!seenNames.has(c.name)) { seenNames.add(c.name); fullCookieParts.push(`${c.name}=${c.value}`); }
+    const seenNames = new Set();
+    for (const cookie of allCookies) {
+      if (!seenNames.has(cookie.name)) {
+        seenNames.add(cookie.name);
+        fullCookieParts.push(`${cookie.name}=${cookie.value}`);
+      }
     }
     const fullCookieStr = fullCookieParts.join('; ');
 
-    // Generate a browser_id if cookie doesn't exist
+    // Generate a browser_id if cookie doesn't exist.
     const effectiveBrowserId = browserId || crypto.randomUUID();
 
     statusEl.innerHTML = s.cookiesSuccess;
 
-    // Step 2: Get active tab and inject script to call Notion APIs
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-    if (!tab?.url?.includes('notion.so') && !tab?.url?.includes('notion.com')) {
-      throw new Error(s.openNotionFirst);
-    }
-
-    // Step 3: Inject content script to call APIs with credentials
+    // Step 2: Inject content script to call Notion APIs with credentials.
     const [{ result: accountData }] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: async () => {

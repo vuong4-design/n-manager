@@ -18,6 +18,7 @@ import (
 )
 
 var ErrToolBridgeNoTool = errors.New("tool bridge produced no usable tool action")
+var ErrToolBridgeIdentityDrift = fmt.Errorf("%w: model refused the client tool environment", ErrToolBridgeNoTool)
 
 const maxInferenceAccountCalls = 3
 const maxEmptyResponseAttempts = 2
@@ -765,6 +766,45 @@ func handlePremiumFeatureUnavailable(pool *AccountPool, acc *Account) {
 }
 
 // HandleAnthropicMessages returns an HTTP handler for the /v1/messages endpoint (Anthropic Messages API)
+func buildAliasedToolBridgeRecoveryMessages(
+	messages []ChatMessage,
+	hasTools bool,
+	toolAliases map[string]string,
+) []ChatMessage {
+	prepared := cloneChatMessages(messages)
+	if hasTools {
+		prepared = aliasToolNamesInMessages(prepared, toolAliases)
+	}
+	return buildToolBridgeRecoveryMessages(prepared)
+}
+
+func prepareFreshThreadAttemptMessages(
+	originalMessages []ChatMessage,
+	toolRecoveryMessages []ChatMessage,
+	hasTools bool,
+	toolAliases map[string]string,
+	freshThread bool,
+) ([]ChatMessage, bool) {
+	base := originalMessages
+	if len(toolRecoveryMessages) > 0 {
+		base = toolRecoveryMessages
+	}
+	prepared := cloneChatMessages(base)
+	if hasTools {
+		prepared = aliasToolNamesInMessages(prepared, toolAliases)
+	}
+	if !freshThread {
+		return prepared, false
+	}
+	if len(toolRecoveryMessages) > 0 {
+		return prepared, true
+	}
+	if needsFreshThreadRecovery(prepared) {
+		return buildFreshThreadRecoveryMessages(prepared), true
+	}
+	return prepared, false
+}
+
 func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		requestID := "msg_" + generateUUIDv4()
@@ -1060,6 +1100,8 @@ func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 		var lastNonQuotaErr error
 		emptyResponseCount := 0
 		allNotionLoginsBusy := false
+		var toolRecoveryMessages []ChatMessage
+		toolBridgeRetried := false
 		liveCheckInterval := AppConfig.QuotaLiveCheckInterval()
 
 		for selection := 0; selection < selectionLimit && accountCalls < maxAccountCalls; selection++ {
@@ -1202,6 +1244,26 @@ func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 						session = nil
 						cacheSession = false
 					}
+				}
+			}
+
+			// A new Notion thread cannot recover server-stored assistant replies.
+			// Collapse the client replay into one self-contained message, or use
+			// the sanitized identity-drift recovery history. Tool names are
+			// aliased before collapse, while the full schema remains in the
+			// session-level bridge contract below.
+			if !isResearcher && !wasContinuation {
+				var recovered bool
+				requestMessages, recovered = prepareFreshThreadAttemptMessages(
+					originalMessages,
+					toolRecoveryMessages,
+					hasTools,
+					originalToToolAlias,
+					true,
+				)
+				if recovered && len(requestMessages) == 1 {
+					log.Printf("[session] prepared self-contained fresh-thread recovery (%d messages -> %d chars) for account %s",
+						len(originalMessages), len(requestMessages[0].Content), acc.UserEmail)
 				}
 			}
 
@@ -1384,6 +1446,26 @@ func HandleAnthropicMessages(pool *AccountPool) http.HandlerFunc {
 				continue
 			}
 
+			if reqErr != nil && errors.Is(reqErr, ErrToolBridgeIdentityDrift) && hasTools {
+				if !toolBridgeRetried {
+					log.Printf("[bridge] %s returned no-tool identity drift; retrying once on a fresh thread with sanitized history", acc.UserEmail)
+					toolBridgeRetried = true
+					toolRecoveryMessages = buildAliasedToolBridgeRecoveryMessages(originalMessages, hasTools, originalToToolAlias)
+					globalSessionManager.DeleteIf(fingerprint, currentSession)
+					session = nil
+					tried = make(map[*Account]bool)
+					selection = -1
+					maxAccountCalls++
+					lastNonQuotaErr = nil
+					if requestDiagnostic != nil {
+						requestDiagnostic.SetContextMode("new_thread_after_error")
+					}
+					continue
+				}
+				lastNonQuotaErr = reqErr
+				break
+			}
+
 			if reqErr != nil && errors.Is(reqErr, ErrPremiumFeatureUnavailable) {
 				handlePremiumFeatureUnavailable(pool, acc)
 				if requestDiagnostic != nil {
@@ -1475,6 +1557,8 @@ func requestAttemptOutcome(err error) string {
 		return "empty_response"
 	case errors.Is(err, ErrPromptTooLong):
 		return "context_too_long"
+	case errors.Is(err, ErrToolBridgeIdentityDrift):
+		return "tool_bridge_identity_drift"
 	case errors.Is(err, ErrToolBridgeNoTool):
 		return "required_tool_missing"
 	case errors.Is(err, ErrPremiumFeatureUnavailable):
@@ -2381,7 +2465,7 @@ func handleAnthropicStream(ctx context.Context, w http.ResponseWriter, acc *Acco
 	actionDetected := prepared.HasCalls || prepared.WebSearchQuery != "" || prepared.DoneText != ""
 	if !actionDetected && detectToolBridgeNoToolResponse(cleanRemaining) {
 		log.Printf("[bridge] %s detected no-tool identity-drift text (%d chars), requesting clean retry", requestID, len(cleanRemaining))
-		return ErrToolBridgeNoTool
+		return ErrToolBridgeIdentityDrift
 	}
 	if requiresToolCall && !prepared.HasCalls && prepared.WebSearchQuery == "" {
 		return ErrToolBridgeNoTool
@@ -2561,7 +2645,7 @@ func handleAnthropicNonStream(ctx context.Context, w http.ResponseWriter, acc *A
 		actionDetected := prepared.HasCalls || prepared.WebSearchQuery != "" || prepared.DoneText != ""
 		if !actionDetected && detectToolBridgeNoToolResponse(prepared.Remaining) {
 			log.Printf("[bridge] %s detected no-tool identity-drift text (%d chars), requesting clean retry", requestID, len(prepared.Remaining))
-			return ErrToolBridgeNoTool
+			return ErrToolBridgeIdentityDrift
 		}
 		requiresCall := toolChoiceMode == "required" || strings.HasPrefix(toolChoiceMode, "force:")
 		if requiresCall && !prepared.HasCalls && prepared.WebSearchQuery == "" {

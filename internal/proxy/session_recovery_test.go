@@ -190,3 +190,83 @@ func TestBuildToolBridgeRecoveryMessagesSkipsIdentityDriftAssistantText(t *testi
 		}
 	}
 }
+
+func TestPrepareFreshThreadAttemptMessagesKeepsToolContractHistoryAliased(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "system", Content: "You are Claude Code."},
+		{Role: "user", Content: "inspect the file"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Function: ToolCallFunction{Name: "Read", Arguments: `{"path":"a.go"}`}}}},
+		{Role: "tool", ToolCallID: "call-1", Name: "Read", Content: "package main"},
+		{Role: "user", Content: "continue"},
+	}
+	got, recovered := prepareFreshThreadAttemptMessages(messages, nil, true, map[string]string{"Read": "action_1"}, true)
+	if !recovered || len(got) != 1 {
+		t.Fatalf("recovered=%v messages=%d", recovered, len(got))
+	}
+	for _, want := range []string{"System instructions:", "Tool (action_1): package main", "Latest user message:\ncontinue"} {
+		if !strings.Contains(got[0].Content, want) {
+			t.Fatalf("fresh recovery lost %q: %s", want, got[0].Content)
+		}
+	}
+}
+
+func TestPrepareFreshThreadAttemptMessagesUsesSanitizedToolRecovery(t *testing.T) {
+	original := []ChatMessage{{Role: "user", Content: "original"}}
+	recovery := []ChatMessage{
+		{Role: "user", Content: "sanitized"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Function: ToolCallFunction{Name: "Read", Arguments: `{}`}}}},
+		{Role: "tool", ToolCallID: "call-1", Name: "Read", Content: "ok"},
+	}
+	got, recovered := prepareFreshThreadAttemptMessages(original, recovery, true, map[string]string{"Read": "action_1"}, true)
+	if !recovered || len(got) != len(recovery) {
+		t.Fatalf("recovered=%v messages=%d", recovered, len(got))
+	}
+	if got[0].Content != "sanitized" || got[1].ToolCalls[0].Function.Name != "action_1" || got[2].Name != "action_1" {
+		t.Fatalf("sanitized recovery or aliases changed: %#v", got)
+	}
+}
+
+func TestPrepareFreshThreadAttemptMessagesLeavesContinuationUncollapsed(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "next"},
+	}
+	got, recovered := prepareFreshThreadAttemptMessages(messages, nil, false, nil, false)
+	if recovered || len(got) != len(messages) {
+		t.Fatalf("continuation recovered=%v messages=%d", recovered, len(got))
+	}
+}
+
+func TestFreshThreadRecoveryRetainsMoreThanLegacyFourKilobytes(t *testing.T) {
+	const marker = "RECENT-HISTORY-BEYOND-FOUR-KILOBYTES"
+	messages := []ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "first"}}
+	for i := 0; i < 5; i++ {
+		content := strings.Repeat(string(rune('a'+i)), 1000)
+		if i == 0 {
+			content += marker
+		}
+		messages = append(messages, ChatMessage{Role: "assistant", Content: content})
+	}
+	messages = append(messages, ChatMessage{Role: "user", Content: "latest"})
+	got := buildFreshThreadRecoveryMessages(messages)
+	if len(got) != 1 || !strings.Contains(got[0].Content, marker) {
+		t.Fatalf("expanded recovery history did not retain marker: %#v", got)
+	}
+}
+
+func TestBuildAliasedToolBridgeRecoveryMessagesAliasesBeforeCollapse(t *testing.T) {
+	messages := []ChatMessage{
+		{Role: "user", Content: "inspect"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Function: ToolCallFunction{Name: "Read", Arguments: `{}`}}}},
+		{Role: "tool", ToolCallID: "call-1", Name: "Read", Content: "result"},
+		{Role: "user", Content: "continue"},
+	}
+	got := buildAliasedToolBridgeRecoveryMessages(messages, true, map[string]string{"Read": "action_1"})
+	if len(got) != 1 || !strings.Contains(got[0].Content, "Tool (action_1): result") {
+		t.Fatalf("tool alias was not applied before recovery collapse: %#v", got)
+	}
+	if strings.Contains(got[0].Content, "Tool (Read):") {
+		t.Fatalf("original tool name leaked into collapsed recovery: %s", got[0].Content)
+	}
+}
