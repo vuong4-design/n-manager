@@ -15,25 +15,26 @@ import (
 // its server-generated Agent replies. Reusing this thread is required because
 // current Notion ignores synthetic assistant-reply entries in a fresh replay.
 type Session struct {
-	mu                sync.Mutex
-	managerKey        string
-	managerEpoch      uint64
-	managerKeyVersion uint64
-	publishAssistant  func(ChatMessage)
-	expectedClientKey string
-	ThreadID          string
-	AccountID         string
-	AccountEmail      string
-	ConfigID          string
-	ContextID         string
-	ContextPageID     string
-	OriginalDatetime  string
-	ModelUsed         string
-	TurnCount         int
-	RawMessageCount   int
-	UpdatedConfigIDs  []string
-	CreatedAt         time.Time
-	LastUsedAt        time.Time
+	mu                    sync.Mutex
+	managerKey            string
+	managerEpoch          uint64
+	managerKeyVersion     uint64
+	publishAssistant      func(ChatMessage)
+	expectedClientKey     string
+	ThreadID              string
+	AccountID             string
+	AccountEmail          string
+	ConfigID              string
+	ContextID             string
+	ContextPageID         string
+	OriginalDatetime      string
+	ModelUsed             string
+	TurnCount             int
+	RawMessageCount       int
+	UpdatedConfigIDs      []string
+	ToolBridgeFingerprint string
+	CreatedAt             time.Time
+	LastUsedAt            time.Time
 }
 
 type SessionManager struct {
@@ -590,6 +591,7 @@ func buildPartialContinuationContent(messages []ChatMessage) string {
 	}
 
 	var content strings.Builder
+	needsReadNarrowing := false
 	for _, message := range tail {
 		switch message.Role {
 		case "tool":
@@ -604,6 +606,10 @@ func buildPartialContinuationContent(messages []ChatMessage) string {
 			}
 			content.WriteString(":\n")
 			content.WriteString(message.Content)
+			if strings.EqualFold(strings.TrimSpace(message.Name), "Read") &&
+				strings.Contains(strings.ToLower(message.Content), "exceeds maximum allowed tokens") {
+				needsReadNarrowing = true
+			}
 		case "user":
 			userContent := normalizeSessionUserContent(message.Content)
 			if message.ToolCallID != "" || userContent == "" {
@@ -615,6 +621,13 @@ func buildPartialContinuationContent(messages []ChatMessage) string {
 			content.WriteString("Next user message:\n")
 			content.WriteString(userContent)
 		}
+	}
+	if needsReadNarrowing {
+		if content.Len() > 0 {
+			content.WriteString("\n\n")
+		}
+		content.WriteString("Tool recovery guidance:\n")
+		content.WriteString("The previous Read call was too large. Do not repeat the same full-file Read; use Grep to narrow the scope or call Read with both offset and limit.")
 	}
 	if content.Len() == 0 {
 		return extractLastUserMessage(messages)

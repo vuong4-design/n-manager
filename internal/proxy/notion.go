@@ -1481,6 +1481,7 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 				session,
 				personalInstructionsPageID,
 				opt.ReasoningEffort,
+				opt.ToolBridgeContract,
 			),
 			CreateThread:            false,
 			IsPartialTranscript:     true,
@@ -1539,6 +1540,7 @@ func CallInference(acc *Account, messages []ChatMessage, model string, disableBu
 				usePersonalInstructions,
 				contextPageID,
 				opt.ReasoningEffort,
+				opt.ToolBridgeContract,
 			),
 			CreateThread:            createThread,
 			IsPartialTranscript:     false,
@@ -1781,9 +1783,10 @@ func buildContextValue(acc *Account, datetime, personalInstructionsPageID string
 
 // buildFullTranscript builds a complete transcript for the first turn of a conversation.
 // Uses ResearcherTranscriptMsg (with id field) to match Notion's real client format.
-func buildFullTranscript(acc *Account, messages []ChatMessage, notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, attachments []UploadedAttachment, configID, contextID, now string, useClientSystemPrompt bool, usePersonalInstructions bool, personalInstructionsPageID string, reasoningEffort ...string) []interface{} {
+func buildFullTranscript(acc *Account, messages []ChatMessage, notionModel string, disableBuiltinTools bool, enableWebSearch bool, enableWorkspaceSearch *bool, useReadOnlyMode bool, attachments []UploadedAttachment, configID, contextID, now string, useClientSystemPrompt bool, usePersonalInstructions bool, personalInstructionsPageID string, transcriptOptions ...string) []interface{} {
+	reasoningEffort, bridgeContract := splitTranscriptBridgeOptions(transcriptOptions)
 	hasAttachments := len(attachments) > 0
-	configValue := buildConfigValue(notionModel, disableBuiltinTools, enableWebSearch, enableWorkspaceSearch, useReadOnlyMode, hasAttachments, false, reasoningEffort...)
+	configValue := buildConfigValue(notionModel, disableBuiltinTools, enableWebSearch, enableWorkspaceSearch, useReadOnlyMode, hasAttachments, false, reasoningEffort)
 	contextValue := buildContextValue(acc, now, personalInstructionsPageID)
 
 	if hasAttachments {
@@ -1801,6 +1804,15 @@ func buildFullTranscript(acc *Account, messages []ChatMessage, notionModel strin
 			Type:  "context",
 			Value: contextValue,
 		},
+	}
+	if bridgeContract != "" {
+		transcript = append(transcript, ResearcherTranscriptMsg{
+			ID:        generateUUIDv4(),
+			Type:      "user",
+			Value:     [][]string{{bridgeContract}},
+			UserID:    acc.UserID,
+			CreatedAt: now,
+		})
 	}
 
 	// Insert attachment entries before user messages (matches Notion web behavior).
@@ -1882,6 +1894,36 @@ type migratedToolCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Completed bool   `json:"completed"`
+}
+
+func firstNonEmptyString(values []string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func splitTranscriptBridgeOptions(values []string) (reasoningEffort, bridgeContract string) {
+	if len(values) == 0 {
+		return "", ""
+	}
+	first := strings.TrimSpace(values[0])
+	if normalized, err := normalizeReasoningEffort(first); err == nil {
+		reasoningEffort = normalized
+	} else if len(values) == 1 {
+		// Before the bridge port this variadic position carried only reasoning
+		// effort. A non-effort singleton therefore represents the optional
+		// bridge contract used by the newer transcript builder.
+		bridgeContract = first
+	} else {
+		reasoningEffort = first
+	}
+	if len(values) > 1 {
+		bridgeContract = firstNonEmptyString(values[1:])
+	}
+	return reasoningEffort, bridgeContract
 }
 
 type migratedHistoryMessage struct {
@@ -1976,8 +2018,9 @@ func buildPartialTranscript(
 	attachments []UploadedAttachment,
 	session *Session,
 	personalInstructionsPageID string,
-	reasoningEffort ...string,
+	transcriptOptions ...string,
 ) []interface{} {
+	reasoningEffort, bridgeContract := splitTranscriptBridgeOptions(transcriptOptions)
 	hasAttachments := len(attachments) > 0
 	configValue := buildConfigValue(
 		notionModel,
@@ -1987,7 +2030,7 @@ func buildPartialTranscript(
 		useReadOnlyMode,
 		hasAttachments,
 		true,
-		reasoningEffort...,
+		reasoningEffort,
 	)
 	contextPageID := strings.TrimSpace(personalInstructionsPageID)
 	if contextPageID == "" {
@@ -2007,6 +2050,15 @@ func buildPartialTranscript(
 		ResearcherTranscriptMsg{ID: session.ConfigID, Type: "config", Value: configValue},
 		ResearcherTranscriptMsg{ID: session.ContextID, Type: "context", Value: contextValue},
 		ResearcherTranscriptMsg{ID: generateUUIDv4(), Type: "context", Value: currentContextValue},
+	}
+	if bridgeContract != "" {
+		transcript = append(transcript, ResearcherTranscriptMsg{
+			ID:        generateUUIDv4(),
+			Type:      "user",
+			Value:     [][]string{{bridgeContract}},
+			UserID:    acc.UserID,
+			CreatedAt: currentDatetime,
+		})
 	}
 	for _, id := range session.UpdatedConfigIDs {
 		transcript = append(transcript, UpdatedConfigMsg{ID: id, Type: "updated-config"})
