@@ -876,6 +876,11 @@ function AccountCard({
       getQuotaStatusByUsage(userQuota.usage, userQuota.limit),
     ])
   const modelCount = account.models?.length || 0
+  const trialLabel = account.trial_type === 'trial_14'
+    ? t('account.trial_14')
+    : account.trial_type === 'trial_30'
+      ? t('account.trial_30')
+      : t('account.trial_unknown')
 
   const dotCls = status === 'exhausted' ? 'bg-err' : status === 'low' ? 'bg-err' : 'bg-ok'
   // no_workspace shares the exhausted card style so the operator
@@ -961,6 +966,7 @@ function AccountCard({
       {/* Badges */}
       <div className="flex gap-3 flex-wrap mt-3 mb-2.5 items-center">
         <Badge variant="plan">{account.plan || 'unknown'}</Badge>
+        <Badge variant="plan">{trialLabel}</Badge>
         <Badge variant={fullNotionAI ? 'premium' : 'plan'}>
           {fullNotionAI ? t('account.full_ai') : t('account.limited_trial')}
         </Badge>

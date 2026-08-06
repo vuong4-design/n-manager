@@ -313,6 +313,8 @@ type accountPersonalInstructionsSnapshot struct {
 
 type accountProfileSnapshot struct {
 	PlanType           string
+	TrialType          string
+	TrialCheckedAt     *time.Time
 	SpaceCount         int
 	WorkspaceCheckedAt *time.Time
 	AIEnabled          *bool
@@ -334,6 +336,8 @@ func (acc *Account) profileSnapshot() accountProfileSnapshot {
 	defer acc.mu.RUnlock()
 	return accountProfileSnapshot{
 		PlanType:           acc.PlanType,
+		TrialType:          normalizeTrialType(acc.TrialType),
+		TrialCheckedAt:     cloneTimePtr(acc.TrialCheckedAt),
 		SpaceCount:         acc.SpaceCount,
 		WorkspaceCheckedAt: cloneTimePtr(acc.WorkspaceCheckedAt),
 		AIEnabled:          cloneBoolPtr(acc.WorkspaceAIEnabled),
@@ -373,6 +377,8 @@ func (acc *Account) persistSnapshot() accountPersistSnapshot {
 		},
 		Profile: accountProfileSnapshot{
 			PlanType:           acc.PlanType,
+			TrialType:          normalizeTrialType(acc.TrialType),
+			TrialCheckedAt:     cloneTimePtr(acc.TrialCheckedAt),
 			SpaceCount:         acc.SpaceCount,
 			WorkspaceCheckedAt: cloneTimePtr(acc.WorkspaceCheckedAt),
 			AIEnabled:          cloneBoolPtr(acc.WorkspaceAIEnabled),
@@ -1192,6 +1198,8 @@ func (p *AccountPool) applyWorkspaceProfile(acc *Account, result WorkspaceProbeR
 	now := time.Now()
 	acc.SpaceCount = result.Count
 	acc.WorkspaceCheckedAt = &now
+	acc.TrialType = normalizeTrialType(result.TrialType)
+	acc.TrialCheckedAt = &now
 	if result.AIEnabledKnown {
 		enabled := result.AIEnabled
 		acc.WorkspaceAIEnabled = &enabled
@@ -2117,6 +2125,10 @@ func saveAccountFile(dir string, acc *Account) error {
 		existing["quota_checked_at"] = state.Quota.CheckedAt.Format(time.RFC3339)
 	}
 	existing["plan_type"] = state.Profile.PlanType
+	existing["trial_type"] = normalizeTrialType(state.Profile.TrialType)
+	if state.Profile.TrialCheckedAt != nil {
+		existing["trial_checked_at"] = state.Profile.TrialCheckedAt.Format(time.RFC3339)
+	}
 	writePersonalInstructionsState(existing, state.PersonalInstructions)
 	writeManualDisabledState(existing, state.Health.ManuallyDisabled)
 	writePersistedHealthState(existing, state.Health)
@@ -2293,6 +2305,7 @@ func (p *AccountPool) GetAccountDetails() []map[string]interface{} {
 			"email":           acc.UserEmail,
 			"name":            acc.UserName,
 			"plan":            profile.PlanType,
+			"trial_type":      normalizeTrialType(profile.TrialType),
 			"space":           acc.SpaceName,
 			"space_id_short":  acc.ShortSpaceID(),
 			"proxy_path":      proxyAccountPath(acc),
@@ -2326,6 +2339,9 @@ func (p *AccountPool) GetAccountDetails() []map[string]interface{} {
 		if profile.WorkspaceCheckedAt != nil {
 			entry["space_count"] = profile.SpaceCount
 			entry["workspace_checked_at"] = profile.WorkspaceCheckedAt.Format(time.RFC3339)
+		}
+		if profile.TrialCheckedAt != nil {
+			entry["trial_checked_at"] = profile.TrialCheckedAt.Format(time.RFC3339)
 		}
 		if acc.RegisteredVia != "" {
 			entry["registered_via"] = acc.RegisteredVia

@@ -2461,11 +2461,96 @@ func CheckQuota(acc *Account) (*QuotaInfo, error) {
 	return info, nil
 }
 
+const (
+	TrialTypeUnknown = "unknown"
+	TrialType14      = "trial_14"
+	TrialType30      = "trial_30"
+)
+
+func normalizeTrialType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case TrialType14:
+		return TrialType14
+	case TrialType30:
+		return TrialType30
+	default:
+		return TrialTypeUnknown
+	}
+}
+
 type WorkspaceProbeResult struct {
 	Count          int
 	PlanType       string
+	TrialType      string
 	AIEnabled      bool
 	AIEnabledKnown bool
+}
+
+type notionCustomerOffer struct {
+	StartDateMs int64 `json:"startDateMs"`
+	EndDateMs   int64 `json:"endDateMs"`
+	Offer       struct {
+		Type     string `json:"type"`
+		Duration struct {
+			Days int `json:"days"`
+		} `json:"duration"`
+	} `json:"offer"`
+}
+
+// FetchTrialType reads the active Notion customer offer for one workspace.
+// Only the two product-supported trial durations are surfaced. Expired,
+// malformed, paid, and any other offers deliberately normalize to unknown.
+func FetchTrialType(acc *Account) (string, error) {
+	if acc == nil {
+		return TrialTypeUnknown, fmt.Errorf("nil account")
+	}
+	if AppConfig == nil {
+		return TrialTypeUnknown, fmt.Errorf("application config is not initialized")
+	}
+	if strings.TrimSpace(acc.SpaceID) == "" {
+		return TrialTypeUnknown, fmt.Errorf("missing space id")
+	}
+
+	body, err := json.Marshal(map[string]string{"spaceId": acc.SpaceID})
+	if err != nil {
+		return TrialTypeUnknown, fmt.Errorf("marshal customer offers request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, NotionAPIBase+"/getCustomerOffersReceived", bytes.NewReader(body))
+	if err != nil {
+		return TrialTypeUnknown, fmt.Errorf("create customer offers request: %w", err)
+	}
+	setNotionHeadersJSON(req, acc)
+
+	client := getChromeHTTPClient(AppConfig.APITimeoutDuration())
+	resp, err := client.Do(req)
+	if err != nil {
+		return TrialTypeUnknown, fmt.Errorf("send customer offers request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return TrialTypeUnknown, fmt.Errorf("customer offers API error %d", resp.StatusCode)
+	}
+
+	var offers []notionCustomerOffer
+	if err := json.NewDecoder(resp.Body).Decode(&offers); err != nil {
+		return TrialTypeUnknown, fmt.Errorf("parse customer offers response: %w", err)
+	}
+	nowMs := time.Now().UnixMilli()
+	for _, offer := range offers {
+		if !strings.EqualFold(strings.TrimSpace(offer.Offer.Type), "trial") {
+			continue
+		}
+		if offer.StartDateMs <= 0 || offer.EndDateMs <= offer.StartDateMs || nowMs < offer.StartDateMs || nowMs >= offer.EndDateMs {
+			continue
+		}
+		switch offer.Offer.Duration.Days {
+		case 14:
+			return TrialType14, nil
+		case 30:
+			return TrialType30, nil
+		}
+	}
+	return TrialTypeUnknown, nil
 }
 
 type notionSpaceViewPointer struct {
@@ -2657,13 +2742,19 @@ func CheckUserWorkspaceProfile(acc *Account) (WorkspaceProbeResult, error) {
 		return WorkspaceProbeResult{}, nil
 	}
 
-	result := WorkspaceProbeResult{Count: count}
+	result := WorkspaceProbeResult{Count: count, TrialType: TrialTypeUnknown}
 	if raw, ok := parsed.RecordMap.Space[acc.SpaceID]; ok {
 		if metadata, ok := decodeNotionWorkspaceMetadata(raw, acc.SpaceID); ok {
 			result.PlanType = metadata.PlanType
 			result.AIEnabled = metadata.AIEnabled
 			result.AIEnabledKnown = true
 		}
+	}
+	// Trial metadata is optional and must never make an otherwise valid
+	// workspace unroutable. Fail closed to unknown when the billing endpoint
+	// is unavailable or changes schema.
+	if trialType, trialErr := FetchTrialType(acc); trialErr == nil {
+		result.TrialType = normalizeTrialType(trialType)
 	}
 	return result, nil
 }

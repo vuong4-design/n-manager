@@ -10,6 +10,8 @@ export interface AccountInfo {
   email: string
   name: string
   plan: string
+  trial_type?: 'trial_14' | 'trial_30' | 'unknown'
+  trial_checked_at?: string
   space: string
   space_id_short?: string
   exhausted: boolean

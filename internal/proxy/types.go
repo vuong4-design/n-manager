@@ -26,6 +26,10 @@ type Account struct {
 	DeviceID      string       `json:"device_id,omitempty"`
 	FullCookie    string       `json:"full_cookie,omitempty"`
 	Models        []ModelEntry `json:"available_models"`
+	// TrialType is normalized from Notion's active customer offer. Supported
+	// values are trial_14, trial_30, and unknown.
+	TrialType      string     `json:"trial_type,omitempty"`
+	TrialCheckedAt *time.Time `json:"trial_checked_at,omitempty"`
 	// RegisteredVia tags which Provider.ID() created this account (e.g.
 	// "microsoft"). Empty for accounts onboarded before the provider
 	// registry existed; the dashboard treats those as legacy Microsoft.
